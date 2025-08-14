@@ -1,0 +1,102 @@
+[
+  {
+    "job_position": "Social Media Production Assistant",
+    "job_link": "https://www.linkedin.com/jobs/view/social-media-production-assistant-at-tmz-4283997567?position=1&pageNum=0&refId=hcCSPm1riVgoOig25ZvOTg%3D%3D&trackingId=yDpt7DiGmvSUNomwMD%2BBfw%3D%3D",
+    "job_id": "4283997567",
+    "company_name": "TMZ",
+    "company_profile": "https://www.linkedin.com/company/tmz?trk=public_jobs_jserp-result_job-search-card-subtitle",
+    "job_location": "Los Angeles, CA",
+    "job_posting_date": "2025-08-12",
+    "company_logo_url": "https://media.licdn.com/dms/image/v2/D560BAQFZp6Psm8_e0g/company-logo_100_100/company-logo_100_100/0/1699637506549/tmz_logo?e=2147483647&v=beta&t=L1YF-nl7xAGGgaCH81FH0NGQrf-w4rcJ2u1rEIVXWV4"
+  },
+  {
+    "job_position": "Marketing Assistant",
+    "job_link": "https://www.linkedin.com/jobs/view/marketing-assistant-at-skin-gym-4282048878?position=2&pageNum=0&refId=hcCSPm1riVgoOig25ZvOTg%3D%3D&trackingId=8mDgBkNlJWHGUfyD0al3%2FQ%3D%3D",
+    "job_id": "4282048878",
+    "company_name": "Skin Gym",
+    "company_profile": "https://www.linkedin.com/company/skin-gym-co?trk=public_jobs_jserp-result_job-search-card-subtitle",
+    "job_location": "Los Angeles Metropolitan Area",
+    "job_posting_date": "2025-08-12",
+    "company_logo_url": "https://media.licdn.com/dms/image/v2/C4E0BAQGWbEi5KHxFMw/company-logo_100_100/company-logo_100_100/0/1646326373896/skin_gym_co_logo?e=2147483647&v=beta&t=lpfSEA06-0HG9LcRU2PixIb1JQoV0hirmcKRuk_WvJQ"
+  },
+  {
+    "job_position": "Assistant Manager, Social Media - Ann Taylor",
+    "job_link": "https://www.linkedin.com/jobs/view/assistant-manager-social-media-ann-taylor-at-ann-taylor-4283909131?position=3&pageNum=0&refId=hcCSPm1riVgoOig25ZvOTg%3D%3D&trackingId=V5aHrXF3a8aug1MTsNiw%2Fg%3D%3D",
+    "job_id": "4283909131",
+    "company_name": "Ann Taylor",
+    "company_profile": "https://www.linkedin.com/company/ann-taylor?trk=public_jobs_jserp-result_job-search-card-subtitle",
+    "job_location": "New York, NY",
+    "job_posting_date": "2025-08-12",
+    "company_logo_url": "https://media.licdn.com/dms/image/v2/D560BAQEn_1H119wI5A/company-logo_100_100/company-logo_100_100/0/1731697424795/ann_taylor_logo?e=2147483647&v=beta&t=e2uO9yMv5jFZmKuiyQDWPp7pHKtUWB_ArBap_iBjCCI"
+  },
+  {
+    "job_position": "Social Media Associate, Atria Books",
+    "job_link": "https://www.linkedin.com/jobs/view/social-media-associate-atria-books-at-lensa-4284405115?position=4&pageNum=0&refId=hcCSPm1riVgoOig25ZvOTg%3D%3D&trackingId=%2FYZT1kxB1vj6Bx5eQs6L9g%3D%3D",
+    "job_id": "4284405115",
+    "company_name": "Lensa",
+    "company_profile": "https://www.linkedin.com/company/lensa?trk=public_jobs_jserp-result_job-search-card-subtitle",
+    "job_location": "New York, NY",
+    "job_posting_date": "2025-08-13",
+    "company_logo_url": "https://media.licdn.com/dms/image/v2/D4D0BAQEkHa-0Aki9XQ/company-logo_100_100/B4DZaKylu7GsAQ-/0/1746085240184/lensa_logo?e=2147483647&v=beta&t=vxuqQreX_wx1J2lugCeUKuGGZtbGyjhRRFeWyrBMnFQ"
+  },
+  {
+    "job_position": "Marketing Assistant",
+    "job_link": "https://www.linkedin.com/jobs/view/marketing-assistant-at-bela-brand-bat-4284449280?position=5&pageNum=0&refId=hcCSPm1riVgoOig25ZvOTg%3D%3D&trackingId=ejEUdpEd59GV1TOgZwA%2BiA%3D%3D",
+    "job_id": "4284449280",
+    "company_name": "Bela Brand Bat",
+    "company_profile": "https://www.linkedin.com/company/belabrandbat?trk=public_jobs_jserp-result_job-search-card-subtitle",
+    "job_location": "Columbus, OH",
+    "job_posting_date": "2025-08-13",
+    "company_logo_url": "https://media.licdn.com/dms/image/v2/D4E0BAQFQIOCsDTB_EA/company-logo_100_100/company-logo_100_100/0/1710276901077/experienceviral_logo?e=2147483647&v=beta&t=npGs6OhRW_LsiwHprXe_gVYOUdaaGRr0pedj4SM0Dd4"
+  },
+  {
+    "job_position": "Junior Marketing Designer",
+    "job_link": "https://www.linkedin.com/jobs/view/junior-marketing-designer-at-lensa-4281782379?position=6&pageNum=0&refId=hcCSPm1riVgoOig25ZvOTg%3D%3D&trackingId=QiZtaLZlCGf70Y4optYkDw%3D%3D",
+    "job_id": "4281782379",
+    "company_name": "Lensa",
+    "company_profile": "https://www.linkedin.com/company/lensa?trk=public_jobs_jserp-result_job-search-card-subtitle",
+    "job_location": "New York, NY",
+    "job_posting_date": "2025-08-13",
+    "company_logo_url": "https://media.licdn.com/dms/image/v2/D4D0BAQEkHa-0Aki9XQ/company-logo_100_100/B4DZaKylu7GsAQ-/0/1746085240184/lensa_logo?e=2147483647&v=beta&t=vxuqQreX_wx1J2lugCeUKuGGZtbGyjhRRFeWyrBMnFQ"
+  },
+  {
+    "job_position": "Junior Designer",
+    "job_link": "https://www.linkedin.com/jobs/view/junior-designer-at-lensa-4281782350?position=7&pageNum=0&refId=hcCSPm1riVgoOig25ZvOTg%3D%3D&trackingId=4qRyslY3OSvgkBw7Cas%2BxQ%3D%3D",
+    "job_id": "4281782350",
+    "company_name": "Lensa",
+    "company_profile": "https://www.linkedin.com/company/lensa?trk=public_jobs_jserp-result_job-search-card-subtitle",
+    "job_location": "New York, NY",
+    "job_posting_date": "2025-08-13",
+    "company_logo_url": "https://media.licdn.com/dms/image/v2/D4D0BAQEkHa-0Aki9XQ/company-logo_100_100/B4DZaKylu7GsAQ-/0/1746085240184/lensa_logo?e=2147483647&v=beta&t=vxuqQreX_wx1J2lugCeUKuGGZtbGyjhRRFeWyrBMnFQ"
+  },
+  {
+    "job_position": "Creative Project Manager",
+    "job_link": "https://www.linkedin.com/jobs/view/creative-project-manager-at-as-beauty-group-4284447934?position=8&pageNum=0&refId=hcCSPm1riVgoOig25ZvOTg%3D%3D&trackingId=crbmqNFGvc3fPPNx6xafAQ%3D%3D",
+    "job_id": "4284447934",
+    "company_name": "AS Beauty Group",
+    "company_profile": "https://www.linkedin.com/company/as-beauty-group-llc?trk=public_jobs_jserp-result_job-search-card-subtitle",
+    "job_location": "New York City Metropolitan Area",
+    "job_posting_date": "2025-08-13",
+    "company_logo_url": "https://media.licdn.com/dms/image/v2/C4E0BAQGGlYS7LA3jYg/company-logo_100_100/company-logo_100_100/0/1630626998289/as_beauty_group_llc_logo?e=2147483647&v=beta&t=7gX3jTEGwey8KfbVVIfhnTKlXhHOd_17mFfVznU8ukw"
+  },
+  {
+    "job_position": "Campaign Manager",
+    "job_link": "https://www.linkedin.com/jobs/view/campaign-manager-at-major-league-baseball-mlb-4230832935?position=9&pageNum=0&refId=hcCSPm1riVgoOig25ZvOTg%3D%3D&trackingId=SFR%2FoEOB5CI%2BRSi1UO7B1g%3D%3D",
+    "job_id": "4230832935",
+    "company_name": "Major League Baseball (MLB)",
+    "company_profile": "https://www.linkedin.com/company/major-league-baseball?trk=public_jobs_jserp-result_job-search-card-subtitle",
+    "job_location": "New York, NY",
+    "job_posting_date": "2025-08-13",
+    "company_logo_url": "https://media.licdn.com/dms/image/v2/C4D0BAQFC0zli3gsxNQ/company-logo_100_100/company-logo_100_100/0/1630476531397/major_league_baseball_logo?e=2147483647&v=beta&t=2WyUwAcGK1iIOCGUYPDWOzXGdHd38hsTDmDLywdv1dk"
+  },
+  {
+    "job_position": "Marketing Assistant",
+    "job_link": "https://www.linkedin.com/jobs/view/marketing-assistant-at-platinum-coastal-group-4284156757?position=10&pageNum=0&refId=hcCSPm1riVgoOig25ZvOTg%3D%3D&trackingId=CjNIzum5gWxpNpTPwSws0g%3D%3D",
+    "job_id": "4284156757",
+    "company_name": "Platinum Coastal Group",
+    "company_profile": "https://www.linkedin.com/company/platinum-coastal-group?trk=public_jobs_jserp-result_job-search-card-subtitle",
+    "job_location": "Raleigh, NC",
+    "job_posting_date": "2025-08-13",
+    "company_logo_url": "https://media.licdn.com/dms/image/v2/D4E0BAQHNXF6hDC7kcw/company-logo_100_100/company-logo_100_100/0/1728326269744?e=2147483647&v=beta&t=20Zg_Fj7u4IBlNbbt0EnP6YvE_EObbNz9kt5pgAv-x0"
+  }
+]

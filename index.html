@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>LinkedIn Jobs Fetcher</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center">
+  <div class="bg-white shadow-lg rounded-xl p-6 w-full max-w-2xl">
+    <h1 class="text-2xl font-bold text-center mb-4">Fetch LinkedIn Jobs</h1>
+
+    <form id="jobForm" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <!-- Required -->
+      <div class="md:col-span-2">
+        <label class="block text-sm font-medium mb-1">Field *</label>
+        <input required name="field" type="text" placeholder="e.g., Digital Marketing"
+               class="w-full border rounded-lg p-2"/>
+      </div>
+
+      <!-- Location -->
+      <div>
+        <label class="block text-sm font-medium mb-1">Location</label>
+        <input name="location" type="text" value="United States of America"
+               placeholder="e.g., India or United States of America"
+               class="w-full border rounded-lg p-2"/>
+      </div>
+
+      <!-- GeoID (optional) -->
+      <div>
+        <label class="block text-sm font-medium mb-1">GeoID (optional)</label>
+        <input name="geoid" type="text" placeholder="e.g., 103644278"
+               class="w-full border rounded-lg p-2"/>
+      </div>
+
+      <!-- Pagination -->
+      <div>
+        <label class="block text-sm font-medium mb-1">Page</label>
+        <input name="page" type="number" min="1" value="1"
+               class="w-full border rounded-lg p-2"/>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium mb-1">Count (1–49)</label>
+        <input name="count" type="number" min="1" max="49" value="20"
+               class="w-full border rounded-lg p-2"/>
+      </div>
+
+      <!-- Sort By -->
+      <div>
+        <label class="block text-sm font-medium mb-1">Sort By</label>
+        <select name="sort_by" class="w-full border rounded-lg p-2">
+          <option value="">(default)</option>
+          <option value="relevance">relevance</option>
+          <option value="day">day</option>
+          <option value="week">week</option>
+          <option value="month">month</option>
+        </select>
+      </div>
+
+      <!-- Job Type -->
+      <div>
+        <label class="block text-sm font-medium mb-1">Job Type</label>
+        <select name="job_type" class="w-full border rounded-lg p-2">
+          <option value="">Any</option>
+          <option value="fulltime">fulltime</option>
+          <option value="parttime">parttime</option>
+          <option value="contract">contract</option>
+          <option value="internship">internship</option>
+          <option value="temporary">temporary</option>
+          <option value="volunteer">volunteer</option>
+        </select>
+      </div>
+
+      <!-- Experience Level -->
+      <div>
+        <label class="block text-sm font-medium mb-1">Experience Level</label>
+        <select name="exp_level" class="w-full border rounded-lg p-2">
+          <option value="">Any</option>
+          <option value="internship">internship</option>
+          <option value="entry_level">entry_level</option>
+          <option value="associate">associate</option>
+          <option value="mid_senior_level">mid_senior_level</option>
+          <option value="director">director</option>
+          <option value="executive">executive</option>
+        </select>
+      </div>
+
+      <!-- Work Type -->
+      <div>
+        <label class="block text-sm font-medium mb-1">Work Type</label>
+        <select name="work_type" class="w-full border rounded-lg p-2">
+          <option value="">Any</option>
+          <option value="onsite">onsite</option>
+          <option value="remote">remote</option>
+          <option value="hybrid">hybrid</option>
+        </select>
+      </div>
+
+      <!-- Company Filter -->
+      <div class="md:col-span-2">
+        <label class="block text-sm font-medium mb-1">Company Filter</label>
+        <input name="filter_by_company" type="text" placeholder="e.g., Google, Meta"
+               class="w-full border rounded-lg p-2"/>
+      </div>
+
+      <div class="md:col-span-2">
+        <button type="submit"
+                class="bg-blue-500 text-white py-2 px-4 rounded-lg w-full hover:bg-blue-600">
+          Fetch & Save
+        </button>
+      </div>
+    </form>
+
+    <div id="result" class="mt-4 text-sm text-gray-700"></div>
+
+    <div id="tableWrap" class="mt-4 hidden">
+      <div class="overflow-auto border rounded-lg">
+        <table class="min-w-full text-sm">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="text-left p-2">Position</th>
+              <th class="text-left p-2">Company</th>
+              <th class="text-left p-2">Location</th>
+              <th class="text-left p-2">Posted</th>
+            </tr>
+          </thead>
+          <tbody id="jobsBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById('jobForm');
+    const resultEl = document.getElementById('result');
+    const tableWrap = document.getElementById('tableWrap');
+    const jobsBody = document.getElementById('jobsBody');
+
+    form.addEventListener('submit', async function (e) {
+      e.preventDefault();
+
+      // Build params (skip empty)
+      const formData = new FormData(this);
+      const params = {};
+      formData.forEach((value, key) => {
+        const v = String(value || '').trim();
+        if (v) params[key] = v;
+      });
+
+      resultEl.innerText = "Fetching jobs...";
+      tableWrap.classList.add('hidden');
+      jobsBody.innerHTML = '';
+
+      try {
+        const res = await fetch('http://localhost:8086/api/fetch-jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(params),
+        });
+
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.message || `HTTP ${res.status}`);
+
+        resultEl.innerText = `✅ ${data.rowCount ?? data.jobs?.length ?? 0} jobs fetched & saved!`;
+
+        const jobs = (data.jobs || []).slice(0, 20);
+        if (jobs.length) {
+          jobsBody.innerHTML = jobs.map(j => `
+            <tr class="border-t">
+              <td class="p-2">
+                <a href="${j.job_link || '#'}" target="_blank" class="text-blue-600 underline">
+                  ${j.job_position || '—'}
+                </a>
+              </td>
+              <td class="p-2">${j.company_name || '—'}</td>
+              <td class="p-2">${j.job_location || '—'}</td>
+              <td class="p-2">${j.job_posting_date || '—'}</td>
+            </tr>
+          `).join('');
+          tableWrap.classList.remove('hidden');
+        }
+
+      } catch (err) {
+        resultEl.innerText = `❌ Error: ${err.message}`;
+      }
+    });
+  </script>
+</body>
+</html>
