@@ -1,74 +1,129 @@
 // utils/GoogleSheetsHelper.js
 import { google } from 'googleapis';
 
-// Google Sheets & Service Account info (HARD-CODED)
-const spreadsheetId = '1DLbb760YrOWjd_REfqgTgAFTis4hkfgMNE7QvEjxo2E'; // your sheet ID
-const sheetName = 'Sheet1';
+function normalizePrivateKey(k = '') {
+  let key = (k || '').trim();
+  // strip accidental wrapping quotes
+  if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) {
+    key = key.slice(1, -1);
+  }
+  // convert literal \n to real newlines
+  return key.replace(/\\n/g, '\n');
+}
 
-// Hardcoded service account JSON
-const serviceAccount = {
-  type: 'service_account',
-  project_id: 'flashfire-464713',
-  private_key_id: '62ed54a18fec7c1fd8b82e473ea8a307c028ba43',
-  private_key: `-----BEGIN PRIVATE KEY-----
-MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDAde+tgn1x8dc6
-Z8Ahd7F7GbYOJ38AeF/NdA9doTFohvriuWynuEFkLihP6DTUwmn/KVR+JZbqs3Dy
-MESf/OFB8PwTH4/TFlEsn+Le8+TpmRP52ue0fJX6mdA2ouSKHwJ0qEJNJaqxt1Kr
-PXtFVYYqf2yiNwftPEhVv6UZvMuLhLA1Qda7R7T4lz46r/O4+Mwg9dAcRrNDKIjf
-YZ8bj2H4fxzzJtoEgBSZOklTjgukRDodLWTMLsw0ZcnvpPpJC6xm32N7/VnENu8q
-vBTxt+OeAMM+ln8reK4qTWdviTJimDPu7Jxv8Jm0HtBL/OW6xNMEi31MEtlDBaRG
-SKYAmaqNAgMBAAECggEAJwB/ZrkX9Nxekm5uCBo6dEjclPe6C/1Y5MjNSFsfKSCZ
-fRK4izCSx9t2veK/uhH/6v6UKdAySjO9Asd3ULitaXCNlM6DlfJi1tk735SrYg9s
-dei/pdrNhfBfuoK+L6NjGwLyFLI6ajNNZHhcH8vaGYijGihuycu6mO3yZknVMduC
-ghJz0FD0yl1FE2ZCkgcbgKUty/ogaqsFXL3vNvcWjezwDyyuibuFEJyV4nQzTFD5
-oDq7/HHwg/3vsm1HPqMzwbBwfG7M5Zq3NeBSJs64ox0yPGM/hfDSHvD9CnObf1h1
-Chkh7AINop8DcDgXiNLSnpJbJWCpqCLtyGzRjTOvAQKBgQDzvzJvLO5qg6BeTxfP
-Ahm4MLZrqnoTSrnMAMsMuGjvWwhXmkKiDySeO7q3KmnDKCGst95QbxMX6mYbF5QK
-FOKXpaNp5ip1c9rr4sLlprn+tI/dRve+YMI0IUsv5ow6RSUb9JWYWjXbF4ppoSHo
-v3ic20pVYxoteekF/JK4QJv2TQKBgQDKIrt2EzhnjpSeQScI0SGMpbvsgiWEQYll
-OkbZOi7+/9tQITp2oodWcTRsw+KTxAI1ebvxvb0PwNzvWkYRfpM+aV8++uZamc6h
-Iyp42KuZC8se9EG/8KjxqhzMZHyiAvc4iwUJRG9TaB49eIkmBWkY5KI22pN+EU6e
-9KyUmYMlQQKBgAo3emq0jG3EhKVPVWUk5mUVDaBnreQ/HpiRc/FdjXBy9V+OpLpc
-PiGvyTzCN1qpxPeTYWsnrLo05gC+tULS60iF9dqLfj4cFBINGDQ+D8/AS8NvpRTC
-w4Eh4B/q3vfWTB7m2ppfNaCwVOnmiiBSXkDc5Dm+BKvhT0Yj9xZoBuGFAoGAOXRN
-3G3yJl08mQ7jzXnEE3o4RC1qBIGsT/2UjcIgAZMv/0Kyn23rEgLzZ8b17BJWnmSP
-q1LHHmcvZUk/iVF1ANRqojgmqbH2LY8VT2wmukXD4nSDC8+X9bjonqAhXNuC8aty
-LwQosIhzr/1G3mvDR7QU94qBSeAZfM0HEOXhhQECgYAbxXyUU+fpGwLgqYZb1ZBt
-N8d7StmyN/oRXl2B+No7fhxqWO5OkdTTGV3tbRMqo/VVleQKjjmEB0t4T153r36l
-LapH2ELwjl7qflLILFeChikw76QxBuU/hMOKPLKkq1lz1D3FWOuyJ+j2bSM42zaK
-S9AvJa59CUfBsgnvYZRfAg==
------END PRIVATE KEY-----`,
-  client_email: 'flashfire@flashfire-464713.iam.gserviceaccount.com',
-  client_id: '110437416262232850623',
-  auth_uri: 'https://accounts.google.com/o/oauth2/auth',
-  token_uri: 'https://oauth2.googleapis.com/token',
-  auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
-  client_x509_cert_url: 'https://www.googleapis.com/robot/v1/metadata/x509/flashfire%40flashfire-464713.iam.gserviceaccount.com',
-  universe_domain: 'googleapis.com',
-};
+function readServiceAccountFromEnv() {
+  // If explicit vars are present, use them and skip JSON/B64 entirely
+  const hasPair =
+    (process.env.GOOGLE_CLIENT_EMAIL || '').trim() &&
+    (process.env.GOOGLE_PRIVATE_KEY || '').trim();
+  if (hasPair) return null;
 
-function getAuth() {
-  return new google.auth.GoogleAuth({
-    credentials: {
-      client_email: serviceAccount.client_email,
-      private_key: serviceAccount.private_key,
-    },
+  // Prefer base64
+  let b64 = process.env.GOOGLE_SERVICE_KEY_B64?.trim();
+  if (b64) {
+    try {
+      // If someone pasted JSON into _B64 by mistake, handle it directly
+      if (b64.startsWith('{')) return JSON.parse(b64);
+      const json = Buffer.from(b64, 'base64').toString('utf8').replace(/^\uFEFF/, '');
+      return JSON.parse(json);
+    } catch {
+      throw new Error('GOOGLE_SERVICE_KEY_B64 is not valid base64/JSON');
+    }
+  }
+
+  // Fallback: plain JSON string
+  let raw = process.env.GOOGLE_SERVICE_KEY;
+  if (raw && raw.trim()) {
+    raw = raw.trim();
+    if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
+      raw = raw.slice(1, -1);
+    }
+    raw = raw.replace(/^\uFEFF/, '');
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw new Error('GOOGLE_SERVICE_KEY is not valid JSON. Use one line with \\n in private_key or prefer GOOGLE_SERVICE_KEY_B64.');
+    }
+  }
+
+  return null;
+}
+
+export async function getSheetsClient() {
+  let email = process.env.GOOGLE_CLIENT_EMAIL || '';
+  let key = process.env.GOOGLE_PRIVATE_KEY || '';
+
+  const svc = readServiceAccountFromEnv();
+  if (svc) {
+    email = svc.client_email || email;
+    key = svc.private_key || key;
+  }
+
+  key = normalizePrivateKey(key);
+
+  if (!email) throw new Error('Google SA client_email missing.');
+  if (!key) throw new Error('Google SA private_key missing.');
+
+  console.log('[Sheets Auth] Email present:', !!email, '| Key length:', key.length);
+
+  // ✅ Use the object constructor to avoid signature/arg-order issues
+  const jwt = new google.auth.JWT({
+    email,
+    key,
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+  });
+
+  await jwt.authorize(); // surfaces auth errors clearly
+  return google.sheets({ version: 'v4', auth: jwt });
+}
+
+async function ensureSheetExists(sheets, spreadsheetId, sheetName) {
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  const found = meta.data.sheets?.find(s => s.properties?.title === sheetName);
+  if (found) return;
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: { requests: [{ addSheet: { properties: { title: sheetName } } }] }
   });
 }
 
-export async function appendToGoogleSheet(rows) {
-  const auth = getAuth();
-  const client = await auth.getClient();
-  const sheets = google.sheets({ version: 'v4', auth: client });
+async function ensureHeaders(sheets, spreadsheetId, sheetName, headers) {
+  if (!headers?.length) return;
+  const range = `${sheetName}!1:1`;
+  const read = await sheets.spreadsheets.values.get({ spreadsheetId, range }).catch(() => null);
+  const existing = read?.data?.values?.[0] || [];
+  const same = existing.length === headers.length && existing.every((v, i) => v === headers[i]);
+  if (!existing.length || !same) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range,
+      valueInputOption: 'RAW',
+      requestBody: { values: [headers] }
+    });
+  }
+}
 
-  const res = await sheets.spreadsheets.values.append({
-    spreadsheetId,
-    range: `${sheetName}!A1`,
-    valueInputOption: 'USER_ENTERED',
-    resource: { values: rows },
+export async function appendToGoogleSheet(
+  rows,
+  { sheetId, sheetName = 'Sheet1', headers, insertHeadersIfMissing = true } = {}
+) {
+  if (!sheetId) throw new Error('sheetId is required');
+  const sheets = await getSheetsClient();
+
+  console.log(`↗️ Google Sheets target: ${sheetId} (tab: ${sheetName})`);
+  await ensureSheetExists(sheets, sheetId, sheetName);
+  if (insertHeadersIfMissing && headers?.length) {
+    await ensureHeaders(sheets, sheetId, sheetName, headers);
+  }
+
+  const range = `${sheetName}!A:A`;
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: sheetId,
+    range,
+    valueInputOption: 'RAW',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: rows }
   });
 
-  console.log(`✅ Appended ${rows.length} rows to Google Sheet`);
-  return res.data;
+  return { success: true, saved: rows.length };
 }
