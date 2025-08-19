@@ -1,6 +1,8 @@
 // utils/GoogleSheetsHelper.js
 import { google } from 'googleapis';
 
+/* -------------------------- AUTH UTILITIES -------------------------- */
+
 function normalizePrivateKey(k = '') {
   let key = (k || '').trim();
   // strip accidental wrapping quotes
@@ -66,7 +68,6 @@ export async function getSheetsClient() {
 
   console.log('[Sheets Auth] Email present:', !!email, '| Key length:', key.length);
 
-  // ✅ Use the object constructor to avoid signature/arg-order issues
   const jwt = new google.auth.JWT({
     email,
     key,
@@ -77,53 +78,154 @@ export async function getSheetsClient() {
   return google.sheets({ version: 'v4', auth: jwt });
 }
 
+/* --------------------------- SHEETS HELPERS -------------------------- */
+
 async function ensureSheetExists(sheets, spreadsheetId, sheetName) {
   const meta = await sheets.spreadsheets.get({ spreadsheetId });
-  const found = meta.data.sheets?.find(s => s.properties?.title === sheetName);
+  const found = meta.data.sheets?.find((s) => s.properties?.title === sheetName);
   if (found) return;
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId,
-    requestBody: { requests: [{ addSheet: { properties: { title: sheetName } } }] }
+    requestBody: { requests: [{ addSheet: { properties: { title: sheetName } } }] },
   });
 }
 
-async function ensureHeaders(sheets, spreadsheetId, sheetName, headers) {
-  if (!headers?.length) return;
+async function getExistingHeaders(sheets, spreadsheetId, sheetName) {
   const range = `${sheetName}!1:1`;
   const read = await sheets.spreadsheets.values.get({ spreadsheetId, range }).catch(() => null);
-  const existing = read?.data?.values?.[0] || [];
-  const same = existing.length === headers.length && existing.every((v, i) => v === headers[i]);
-  if (!existing.length || !same) {
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range,
-      valueInputOption: 'RAW',
-      requestBody: { values: [headers] }
-    });
-  }
+  return read?.data?.values?.[0] || [];
 }
 
+async function writeHeaders(sheets, spreadsheetId, sheetName, headers) {
+  const range = `${sheetName}!1:1`;
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range,
+    valueInputOption: 'RAW',
+    requestBody: { values: [headers] },
+  });
+}
+
+function isObjectRow(r) {
+  return r && !Array.isArray(r) && typeof r === 'object';
+}
+
+function collectAllKeys(rows) {
+  const set = new Set();
+  for (const r of rows) Object.keys(r || {}).forEach((k) => set.add(k));
+  return Array.from(set);
+}
+
+function makeRowsFromObjects(rows, headers) {
+  return rows.map((obj) => headers.map((h) => (obj?.[h] ?? '')));
+}
+
+function validateArrayRows(rows, expectedCols) {
+  rows.forEach((r, i) => {
+    if (!Array.isArray(r) || r.length !== expectedCols) {
+      throw new Error(`Row ${i} has ${r?.length || 0} cols; expected ${expectedCols}`);
+    }
+  });
+}
+
+/* --------------------------- PUBLIC APPEND --------------------------- */
+
+/**
+ * Append data to Google Sheets.
+ *
+ * rows:
+ *  - Array-of-arrays (old behavior), where width must match headers length (if provided)
+ *  - OR array-of-objects (new), where columns auto-expand to include all object keys
+ *
+ * options:
+ *  - sheetId (required)
+ *  - sheetName = 'Sheet1'
+ *  - headers?: string[]             (optional if rows are objects)
+ *  - insertHeadersIfMissing = true
+ *  - valueInputOption = 'RAW'       ('RAW' | 'USER_ENTERED')
+ *  - chunkSize = 5000               (rows per API append call)
+ */
 export async function appendToGoogleSheet(
   rows,
-  { sheetId, sheetName = 'Sheet1', headers, insertHeadersIfMissing = true } = {}
+  {
+    sheetId,
+    sheetName = 'Sheet1',
+    headers,
+    insertHeadersIfMissing = true,
+    valueInputOption = 'RAW',
+    chunkSize = 5000,
+  } = {}
 ) {
   if (!sheetId) throw new Error('sheetId is required');
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { success: true, saved: 0, message: 'No rows to append.' };
+  }
+
   const sheets = await getSheetsClient();
 
   console.log(`↗️ Google Sheets target: ${sheetId} (tab: ${sheetName})`);
   await ensureSheetExists(sheets, sheetId, sheetName);
-  if (insertHeadersIfMissing && headers?.length) {
-    await ensureHeaders(sheets, sheetId, sheetName, headers);
+
+  let finalHeaders = headers && headers.length ? [...headers] : null;
+  const rowsAreObjects = isObjectRow(rows[0]);
+
+  if (rowsAreObjects) {
+    // Build header set from existing + new keys (keeps order)
+    const existing = await getExistingHeaders(sheets, sheetId, sheetName);
+    const newKeys = collectAllKeys(rows);
+    if (finalHeaders) {
+      // If caller supplied headers, keep that order, then add any missing keys
+      const merged = finalHeaders.slice();
+      for (const k of newKeys) if (!merged.includes(k)) merged.push(k);
+      finalHeaders = merged;
+    } else if (existing.length) {
+      // Use existing, then add any new keys
+      const merged = existing.slice();
+      for (const k of newKeys) if (!merged.includes(k)) merged.push(k);
+      finalHeaders = merged;
+    } else {
+      // No headers in sheet and none supplied -> use discovered keys
+      finalHeaders = newKeys;
+    }
+
+    // Ensure headers row is present/up-to-date
+    if (insertHeadersIfMissing !== false) {
+      await writeHeaders(sheets, sheetId, sheetName, finalHeaders);
+    }
+
+    // Convert object rows → arrays per finalHeaders order
+    rows = makeRowsFromObjects(rows, finalHeaders);
+  } else {
+    // Array rows: keep strict behavior with optional headers
+    if (insertHeadersIfMissing && finalHeaders?.length) {
+      const existing = await getExistingHeaders(sheets, sheetId, sheetName);
+      const same =
+        existing.length === finalHeaders.length && existing.every((v, i) => v === finalHeaders[i]);
+      if (!existing.length || !same) {
+        await writeHeaders(sheets, sheetId, sheetName, finalHeaders);
+      }
+      validateArrayRows(rows, finalHeaders.length);
+    } else if (!finalHeaders?.length) {
+      // No headers: ensure consistent width
+      const expected = rows[0]?.length ?? 0;
+      validateArrayRows(rows, expected);
+    }
   }
 
+  // Append in chunks to avoid request size limits
   const range = `${sheetName}!A:A`;
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: sheetId,
-    range,
-    valueInputOption: 'RAW',
-    insertDataOption: 'INSERT_ROWS',
-    requestBody: { values: rows }
-  });
+  let saved = 0;
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const slice = rows.slice(i, i + chunkSize);
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: sheetId,
+      range,
+      valueInputOption,
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values: slice },
+    });
+    saved += slice.length;
+  }
 
-  return { success: true, saved: rows.length };
+  return { success: true, saved };
 }
