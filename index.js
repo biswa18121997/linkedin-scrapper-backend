@@ -12,263 +12,295 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-/**
- * ===== EXCLUDE LIST (edit this) =====
- * Case-insensitive substring match against company name (and company_profile host).
- * Example: ['Meta', 'Google']  -> will skip "Meta Platforms" and "google-cloud".
- */
-const EXCLUDE_COMPANIES = [
-  // 'Meta',
-  // 'Google',
-  'Lensa',
-  'TieTalent'
+/** ===== EXCLUDE LIST (case-insensitive contains) ===== */
+const EXCLUDE_COMPANIES = ['Lensa', 'TieTalent'];
+
+/** ===== Tunables ===== */
+const DEFAULT_LOCATION = 'United States';
+
+/** ===== EXACT Column Order you requested ===== */
+const HEADERS = [
+  'Title','title',
+  'Location','location',
+  'Posted time','postedTime',
+  'Published at','publishedAt',
+  'Job Url','jobUrl',
+  'Company Name','companyName',
+  'Campany Url','companyUrl',
+  'Description','description',
+  'Applications count','applicationsCount',
+  'Employment type','contractType',
+  'Seniority level','experienceLevel',
+  'Job function','workType',
+  'Industries','sector',
+  'Salary','salary',
+  'Posted by','posterFullName',
+  'Poster profile url','posterProfileUrl',
+  'Company ID','companyId',
+  'Apply Url','applyUrl',
+  'Apply Type','applyType',
+  'Benefits','benefits'
 ];
 
-/**
- * Tunables (edit if needed)
- */
-const MAX_PAGES_PER_COMBO = 5; // how many pages to try per (job_type, exp_level)
-const MAX_FALLBACK_PAGES  = 8; // how many pages to try in broad (no filters) fallback
+/* ------------------------- helpers ------------------------- */
 
-/** Build ScrapingDog LinkedIn Jobs URL */
-function buildScrapingDogUrl(params) {
-  const search = new URLSearchParams();
-  search.set('api_key', process.env.SCRAPPING_DOG_API_KEY || '');
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== null && v !== '') {
-      search.set(k, String(v));
-    }
-  }
-  return `https://api.scrapingdog.com/linkedinjobs/?${search.toString()}`;
-}
-
-/** Normalize to array (accepts comma-separated string or array) */
 function toArray(val) {
   if (!val && val !== 0) return [];
   if (Array.isArray(val)) return val.map(String).map(s => s.trim()).filter(Boolean);
   return String(val).split(',').map(s => s.trim()).filter(Boolean);
 }
 
-/** Unique key for dedupe */
-function jobKey(j) {
-  return (
-    j.job_link ||
-    j.job_id ||
-    `${j.company_name || ''}|${j.job_position || ''}|${j.job_location || ''}`
-  );
+function mapPublishedAt(sort_by) {
+  // actor accepts: r86400 (24h), r604800 (7d), r2592000 (30d)
+  const m = { day: 'r86400', week: 'r604800', month: 'r2592000' };
+  const key = String(sort_by || 'day').toLowerCase(); // default latest (24h)
+  return m[key] || 'r86400';
 }
 
-/** One ScrapingDog call */
-async function fetchJobsOnce(params) {
-  const url = buildScrapingDogUrl(params);
-  const apiRes = await fetch(url);
+function mapExperienceLevel(s) {
+  if (!s) return undefined;
+  const k = String(s).toLowerCase();
+  const map = {
+    internship: '1',
+    'entry_level': '2', 'entry level': '2', entry: '2', junior: '2',
+    associate: '3',
+    'mid_senior_level': '4', 'mid-senior': '4', 'mid senior': '4', senior: '4',
+    director: '5', executive: '5',
+  };
+  return map[k] || undefined;
+}
+
+function mapWorkType(s) {
+  if (!s) return undefined;
+  const k = String(s).toLowerCase();
+  const map = { onsite: '1', 'on-site': '1', remote: '2', hybrid: '3' };
+  return map[k] || undefined;
+}
+
+function companyIsExcluded(name, profileUrl, excludes) {
+  if (!excludes.length) return false;
+  const nameLc = (name || '').toLowerCase();
+  let hostLc = '';
+  try { hostLc = new URL(profileUrl || '').hostname.toLowerCase(); } catch {}
+  return excludes.some(x => nameLc.includes(x) || (hostLc && hostLc.includes(x)));
+}
+
+function firstNonEmpty(...vals) {
+  for (const v of vals) {
+    if (v !== undefined && v !== null && String(v).trim() !== '') return v;
+  }
+  return '';
+}
+
+function joinIfArray(x, sep = ', ') {
+  return Array.isArray(x) ? x.filter(Boolean).join(sep) : (x ?? '');
+}
+
+function toRelative(raw) {
+  return firstNonEmpty(raw.postedTime, raw.posted_time, raw.timeAgo, raw.time_ago, raw.listedAtRelative, raw.posted);
+}
+function toPublishedAtISO(raw) {
+  return firstNonEmpty(raw.publishedAt, raw.postedAt, raw.datePosted, raw.listedAt, raw.createdAt);
+}
+function minutesFromRelative(rel) {
+  if (!rel) return Infinity;
+  const s = String(rel).toLowerCase();
+  const num = (re) => { const m = s.match(re); return m ? parseInt(m[1], 10) : 0; };
+  if (s.includes('just now')) return 0;
+  if (/(\d+)\s*(minute|min|m)\b/.test(s)) return num(/(\d+)\s*(?:minute|min|m)\b/);
+  if (/(\d+)\s*(hour|hr|h)\b/.test(s))   return num(/(\d+)\s*(?:hour|hr|h)\b/) * 60;
+  if (/(\d+)\s*(day|d)\b/.test(s))       return num(/(\d+)\s*(?:day|d)\b/) * 1440;
+  if (/(\d+)\s*(week|w)\b/.test(s))      return num(/(\d+)\s*(?:week|w)\b/) * 10080;
+  return Infinity;
+}
+function newestTimestamp(raw) {
+  // Prefer ISO timestamp, else derive from relative
+  const iso = toPublishedAtISO(raw);
+  if (iso && /^\d{4}-\d{2}-\d{2}T/.test(String(iso))) {
+    const t = new Date(iso).getTime();
+    return Number.isFinite(t) ? t : 0;
+  }
+  const rel = toRelative(raw);
+  const mins = minutesFromRelative(rel);
+  if (!Number.isFinite(mins)) return 0;
+  return Date.now() - mins * 60000;
+}
+
+/* ------------------- Apify actor call (bebity) ------------------- */
+async function runApifyLinkedInJobs({ title, location, rows, publishedAt, workType, experienceLevel, companyName }) {
+  const ACTOR_ID = process.env.APIFY_ACTOR_ID || 'bebity~linkedin-jobs-scraper';
+  const token = process.env.APIFY_TOKEN;
+  if (!token) throw new Error('APIFY_TOKEN missing');
+
+  const url = new URL(`https://api.apify.com/v2/acts/${ACTOR_ID}/run-sync-get-dataset-items`);
+  url.searchParams.set('token', token);
+  url.searchParams.set('format', 'json');
+
+  // NOTE: we deliberately DO NOT pass contractType (job type) to keep its relevance low
+  const input = {
+    title: title || '',
+    location: location || DEFAULT_LOCATION,
+    rows: Math.max(1, Number(rows) || 50),
+    publishedAt: publishedAt || 'r86400',         // default 24h (latest)
+    workType: workType || undefined,              // 1 onsite, 2 remote, 3 hybrid
+    experienceLevel: experienceLevel || undefined, // 1..5
+    companyName: (Array.isArray(companyName) && companyName.length) ? companyName : undefined,
+  };
+
+  const apiRes = await fetch(url.toString(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+
   if (!apiRes.ok) {
     const txt = await apiRes.text().catch(() => '');
-    throw new Error(`ScrapingDog API ${apiRes.status}: ${txt || apiRes.statusText}`);
+    throw new Error(`Apify ${ACTOR_ID} ${apiRes.status}: ${txt || apiRes.statusText}`);
   }
   const data = await apiRes.json();
-  return Array.isArray(data) ? data : (data.jobs || data.results || []);
+  return Array.isArray(data) ? data : [];
 }
+
+/* -------------------- Normalize to requested columns -------------------- */
+function normalizeToRequestedColumns(raw) {
+  const title = firstNonEmpty(raw.title, raw.jobTitle, raw.position);
+  const location = firstNonEmpty(raw.location, raw.jobLocation);
+  const postedTime = toRelative(raw);
+  const publishedAt = toPublishedAtISO(raw);
+  const jobUrl = firstNonEmpty(raw.jobUrl, raw.jobLink, raw.url, raw.link);
+  const companyName = firstNonEmpty(raw.companyName, raw.company);
+  const companyUrl = firstNonEmpty(raw.companyUrl, raw.companyProfile, raw.company_link);
+  const description = firstNonEmpty(raw.description, raw.jobDescription, raw.plainDescription);
+  const applicationsCount = firstNonEmpty(raw.applicationsCount, raw.numApplicants, raw.applicants, raw.applicantCount, raw.applications);
+  const contractType = firstNonEmpty(raw.contractType, raw.employmentType, raw.jobType);
+  const experienceLevel = firstNonEmpty(raw.experienceLevel, raw.seniority, raw.seniorityLevel);
+  const workType = firstNonEmpty(raw.workType); // per your mapping: "Job function" -> workType
+  const sector = firstNonEmpty(raw.sector, joinIfArray(raw.industries));
+  const salary = firstNonEmpty(raw.salary, raw.pay, raw.compensation);
+  const posterFullName = firstNonEmpty(raw.posterFullName, raw.posterName);
+  const posterProfileUrl = firstNonEmpty(raw.posterProfileUrl, raw.posterUrl, raw.recruiterUrl);
+  const companyId = firstNonEmpty(raw.companyId);
+  const applyUrl = firstNonEmpty(raw.applyUrl, raw.applicationUrl);
+  const applyType = firstNonEmpty(raw.applyType, raw.applicationType, raw.apply_type);
+  const benefits = joinIfArray(raw.benefits);
+
+  return {
+    'Title': title,
+    'Location': location,
+    'Posted time': postedTime, 
+    'Published at': publishedAt, 
+    'Job Url': jobUrl, 
+    'Company Name': companyName, 
+    'Campany Url': companyUrl, 
+    'Description': description, 
+    'Applications count': String(applicationsCount ?? '').trim(),
+    'Employment type': contractType, 
+    'Seniority level': experienceLevel, 
+    'Job function': workType,
+    'Industries': sector, 
+    'Salary': salary, 
+    'Posted by': posterFullName, 
+    'Poster profile url': posterProfileUrl, 
+    'Company ID': companyId,
+    'Apply Url': applyUrl, 
+    'Apply Type': applyType, 
+    'Benefits': benefits
+  };
+}
+
+/* ----------------------------- Route ----------------------------- */
 
 app.post('/api/fetch-jobs', async (req, res) => {
   try {
     const {
-      // search params
-      field,
+      field,                 // -> title
       location,
-      geoid,
-      sort_by,              // "", "day", "week", "month"
-      work_type,
-      filter_by_company,
+      sort_by,               // "day" (default), "week", "month"
+      work_type,             // onsite/remote/hybrid (1/2/3)
+      filter_by_company,     // comma list -> companyName[]
 
-      // multi-select
-      job_types,
-      exp_levels,
+      // SINGLE experience level (optional)
+      exp_levels,            // internship/entry_level/associate/mid_senior_level/director/executive
 
-      // sheet params from frontend
+      // sheet params
       sheet_id,
       sheet_name = 'Sheet1',
 
-      // totals/pagination
+      // total result target (exact rows for Apify)
       total_records = 50,
-      per_request_count = 10,   // 10 per page
 
-      // passthrough
-      ...rest
+      // optional
+      last_hour_only = false,
     } = req.body || {};
 
-    if (!process.env.SCRAPPING_DOG_API_KEY) {
-      return res.status(400).json({ success: false, message: 'API key missing' });
-    }
     if (!sheet_id) {
       return res.status(400).json({ success: false, message: 'sheet_id is required' });
     }
+    if (!process.env.APIFY_TOKEN) {
+      return res.status(400).json({ success: false, message: 'APIFY_TOKEN missing' });
+    }
 
-    // Build filter combos
-    const jt = toArray(job_types).length ? toArray(job_types) : [null];
-    const xl = toArray(exp_levels).length ? toArray(exp_levels) : [null];
-    const combos = [];
-    for (const j of jt) for (const x of xl) combos.push({ job_type: j, exp_level: x });
-
-    // Targets
+    const excludeList = EXCLUDE_COMPANIES.map(s => s.toLowerCase());
     const TOTAL = Math.max(1, Number(total_records));
-    const CHUNK = Math.min(49, Math.max(1, Number(per_request_count)));
+    const publishedAt = mapPublishedAt(sort_by);     // default 24h (latest window)
+    const workType = mapWorkType(work_type);
+    const expCode = mapExperienceLevel(exp_levels);
+    const companyNames = filter_by_company ? toArray(filter_by_company) : undefined;
 
-    // Exclusion list (normalized once)
-    const excludeList = EXCLUDE_COMPANIES.map(s => String(s || '').toLowerCase()).filter(Boolean);
-
-    // Params common to every request
-    const baseParams = {
-      field,
+    // Single, fast Apify call
+    const items = await runApifyLinkedInJobs({
+      title: field,
       location,
-      geoid,
-      sort_by,             // values day/week/month/"" from frontend
-      work_type,
-      filter_by_company,
-      count: CHUNK,
-      ...rest
-    };
+      rows: TOTAL,
+      publishedAt,
+      workType,
+      experienceLevel: expCode,
+      companyName: companyNames,
+    });
 
-    const allJobs = [];
+    // Sort newest -> oldest (independent of actor order)
+    items.sort((a, b) => newestTimestamp(b) - newestTimestamp(a));
+
+    // Filter, dedupe, and cap to TOTAL
     const seen = new Set();
-    let totalRequests = 0;
-
-    console.log(`🎯 total=${TOTAL} | chunk=${CHUNK} | combos=${combos.length}`);
-    console.log(`↗️ Target sheet: ${sheet_id} (tab: ${sheet_name})`);
-    if (excludeList.length) {
-      console.log(`🚫 Excluding companies: ${excludeList.join(', ')}`);
-    }
-
-    let remaining = TOTAL;
-
-    // Helpers
-    function companyIsExcluded(job) {
-      if (!excludeList.length) return false;
-      const nameLc = (job.company_name || '').toLowerCase();
-      let hostLc = '';
-      try { hostLc = new URL(job.company_profile || '').hostname.toLowerCase(); } catch {}
-      return excludeList.some(x => nameLc.includes(x) || (hostLc && hostLc.includes(x)));
-    }
-
-    function addUnique(items, combo, page) {
-      let added = 0;
-      for (const j of items) {
-        if (companyIsExcluded(j)) {
-          // console.log(`    ↷ Skipped excluded: ${j.company_name}`);
-          continue;
+    const rows = [];
+    for (const raw of items) {
+      // Optional last-hour filter
+      if (last_hour_only) {
+        const rel = toRelative(raw);
+        let mins = minutesFromRelative(rel);
+        if (!Number.isFinite(mins)) {
+          const iso = toPublishedAtISO(raw);
+          if (iso) {
+            const t = new Date(iso).getTime();
+            if (Number.isFinite(t)) mins = (Date.now() - t) / 60000;
+          }
         }
-        const key = jobKey(j);
-        if (seen.has(key)) continue;
-
-        seen.add(key);
-        allJobs.push({
-          job_position: j.job_position || '',
-          job_link: j.job_link || '',
-          job_id: j.job_id || '',
-          company_name: j.company_name || '',
-          company_profile: j.company_profile || '',
-          job_location: j.job_location || '',
-          job_posting_date: j.job_posting_date || '',
-          company_logo_url: j.company_logo_url || '',
-          job_type: combo?.job_type || '',
-          exp_level: combo?.exp_level || '',
-          page
-        });
-        added++;
-        remaining--;
-        if (remaining <= 0) break;
+        if (!Number.isFinite(mins) || mins > 60) continue;
       }
-      return added;
+
+      const companyName = firstNonEmpty(raw.companyName, raw.company);
+      const companyUrl = firstNonEmpty(raw.companyUrl, raw.companyProfile, raw.company_link);
+      if (companyIsExcluded(companyName, companyUrl, excludeList)) continue;
+
+      const jobUrl = firstNonEmpty(raw.jobUrl, raw.jobLink, raw.url, raw.link);
+      const title = firstNonEmpty(raw.title, raw.jobTitle, raw.position);
+      const locationStr = firstNonEmpty(raw.location, raw.jobLocation);
+      const key = `${jobUrl}|${companyName}|${title}|${locationStr}`;
+      if (seen.has(key)) continue;
+
+      seen.add(key);
+      rows.push(normalizeToRequestedColumns(raw));
+      if (rows.length >= TOTAL) break;
     }
-
-    // PHASE 1: iterate each combo, fetch multiple pages, fill globally until TOTAL
-    for (const [idx, combo] of combos.entries()) {
-      if (remaining <= 0) break;
-
-      console.log(`▶️ Combo ${idx + 1}/${combos.length}: job_type=${combo.job_type || 'any'}, exp_level=${combo.exp_level || 'any'}`);
-
-      for (let page = 1; page <= MAX_PAGES_PER_COMBO && remaining > 0; page++) {
-        const params = {
-          ...baseParams,
-          page,
-          job_type: combo.job_type || undefined,
-          exp_level: combo.exp_level || undefined
-        };
-
-        console.log(`  • Fetch page ${page}/${MAX_PAGES_PER_COMBO} for combo ${idx + 1}`);
-        const items = await fetchJobsOnce(params);
-        totalRequests++;
-
-        if (!items.length) {
-          console.log(`  ⚠️ No items on page ${page}. Stopping this combo early.`);
-          break;
-        }
-
-        const added = addUnique(items, combo, page);
-        console.log(`    ✓ Added ${added} from page ${page}. Remaining=${remaining}`);
-      }
-    }
-
-    // PHASE 2: Broad fallback (no job_type / exp_level) to top up
-    if (remaining > 0) {
-      console.log(`🔁 Fallback: need ${remaining} more — running broad search`);
-      for (let page = 1; page <= MAX_FALLBACK_PAGES && remaining > 0; page++) {
-        const params = {
-          ...baseParams,
-          page,
-          job_type: undefined,
-          exp_level: undefined
-        };
-        const items = await fetchJobsOnce(params);
-        totalRequests++;
-
-        if (!items.length) {
-          console.log(`  ⚠️ Fallback page ${page} empty — stopping fallback.`);
-          break;
-        }
-
-        const added = addUnique(items, null, page);
-        console.log(`  ✓ Fallback added ${added} (page ${page}). Remaining=${remaining}`);
-      }
-    }
-
-    const finalJobs = allJobs.slice(0, TOTAL);
-
-    // Headers for the sheet
-    const HEADERS = [
-      'Position',
-      'Link',
-      'Job ID',
-      'Company',
-      'Company Profile',
-      'Location',
-      'Posted',
-      'Logo URL',
-      'Job Type',
-      'Experience Level',
-      'Page'
-    ];
-
-    const rows = finalJobs.map(j => [
-      j.job_position,
-      j.job_link,
-      j.job_id,
-      j.company_name,
-      j.company_profile,
-      j.job_location,
-      j.job_posting_date,
-      j.company_logo_url,
-      j.job_type,
-      j.exp_level,
-      j.page || ''
-    ]);
 
     if (rows.length) {
       await appendToGoogleSheet(rows, {
         sheetId: sheet_id,
         sheetName: sheet_name,
         headers: HEADERS,
-        insertHeadersIfMissing: true
+        insertHeadersIfMissing: true,
+        valueInputOption: 'RAW'
       });
       console.log(`✅ Appended ${rows.length} rows to sheet ${sheet_id} (${sheet_name})`);
     } else {
@@ -277,10 +309,9 @@ app.post('/api/fetch-jobs', async (req, res) => {
 
     res.json({
       success: true,
-      rowCount: rows.length,
-      requestsMade: totalRequests,
-      combos: combos.map(c => ({ job_type: c.job_type || 'any', exp_level: c.exp_level || 'any' })),
-      jobs: finalJobs
+      saved: rows.length,
+      requested: TOTAL,
+      jobs: rows   // so your UI preview works immediately
     });
 
   } catch (err) {
