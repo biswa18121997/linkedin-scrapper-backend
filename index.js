@@ -1,325 +1,345 @@
-// index.js
+// index.js — Bright Data → append to Google Sheet (Sheet1) with dynamic headers from response
 import dotenv from 'dotenv';
 import express from 'express';
 import cors from 'cors';
+import { createServer } from 'http';
 import { appendToGoogleSheet } from './utils/GoogleSheetsHelper.js';
 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 8086;
 
 app.use(cors());
 app.use(express.json());
 
-/** ===== EXCLUDE LIST (case-insensitive contains) ===== */
-const EXCLUDE_COMPANIES = ['Lensa', 'TieTalent'];
+// ===== Bright Data config =====
+const BDATA_API = 'https://api.brightdata.com/datasets/v3';
+const BDATA_KEY = process.env.BRIGHT_DATA_API_KEY;
+const DS_LINKEDIN = normalizeDatasetId(process.env.BRIGHTDATA_LINKEDIN_DATASET_ID); // e.g. gd_lpfll7v5hcqtkxl6l
 
-/** ===== Tunables ===== */
-const DEFAULT_LOCATION = 'United States';
+if (!BDATA_KEY) console.warn('⚠️ BRIGHT_DATA_API_KEY not set');
+if (!DS_LINKEDIN) console.warn('⚠️ BRIGHTDATA_LINKEDIN_DATASET_ID not set or invalid (expect "gd_...")');
 
-/** ===== EXACT Column Order you requested ===== */
-const HEADERS = [
-  'Title','title',
-  'Location','location',
-  'Posted time','postedTime',
-  'Published at','publishedAt',
-  'Job Url','jobUrl',
-  'Company Name','companyName',
-  'Campany Url','companyUrl',
-  'Description','description',
-  'Applications count','applicationsCount',
-  'Employment type','contractType',
-  'Seniority level','experienceLevel',
-  'Job function','workType',
-  'Industries','sector',
-  'Salary','salary',
-  'Posted by','posterFullName',
-  'Poster profile url','posterProfileUrl',
-  'Company ID','companyId',
-  'Apply Url','applyUrl',
-  'Apply Type','applyType',
-  'Benefits','benefits'
-];
-
-/* ------------------------- helpers ------------------------- */
-
-function toArray(val) {
-  if (!val && val !== 0) return [];
-  if (Array.isArray(val)) return val.map(String).map(s => s.trim()).filter(Boolean);
-  return String(val).split(',').map(s => s.trim()).filter(Boolean);
+// ===== Small helpers =====
+function normalizeDatasetId(v) {
+  const m = String(v || '').match(/\bgd_[a-z0-9]+/i);
+  return m ? m[0] : '';
 }
-
-function mapPublishedAt(sort_by) {
-  // actor accepts: r86400 (24h), r604800 (7d), r2592000 (30d)
-  const m = { day: 'r86400', week: 'r604800', month: 'r2592000' };
-  const key = String(sort_by || 'day').toLowerCase(); // default latest (24h)
-  return m[key] || 'r86400';
-}
-
-function mapExperienceLevel(s) {
-  if (!s) return undefined;
-  const k = String(s).toLowerCase();
+function locationFromCountry(country) {
+  const c = String(country || '').trim().toUpperCase();
   const map = {
-    internship: '1',
-    'entry_level': '2', 'entry level': '2', entry: '2', junior: '2',
-    associate: '3',
-    'mid_senior_level': '4', 'mid-senior': '4', 'mid senior': '4', senior: '4',
-    director: '5', executive: '5',
+    US: 'United States',
+    IN: 'India',
+    GB: 'United Kingdom',
+    CA: 'Canada',
+    AU: 'Australia',
+    FR: 'France',
+    DE: 'Germany',
   };
-  return map[k] || undefined;
+  return map[c] || 'United States';
+}
+function isValidationErr(text) {
+  return /validation_error|This input should not contain|Required field/i.test(String(text || ''));
 }
 
-function mapWorkType(s) {
-  if (!s) return undefined;
-  const k = String(s).toLowerCase();
-  const map = { onsite: '1', 'on-site': '1', remote: '2', hybrid: '3' };
-  return map[k] || undefined;
+// ===== Polling helpers =====
+// Force JSON array by default; allow tuning batch/part if ever needed.
+const SNAPSHOT_URL = (id, { format = 'json', batchSize, part } = {}) => {
+  const qs = new URLSearchParams({ format });
+  if (batchSize) qs.set('batch_size', String(batchSize));
+  if (part) qs.set('part', String(part));
+  return `${BDATA_API}/snapshot/${id}?${qs.toString()}`;
+};
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// NDJSON/JSONL parser (line-delimited JSON objects)
+function parseNdjson(text) {
+  return text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => JSON.parse(l));
 }
 
-function companyIsExcluded(name, profileUrl, excludes) {
-  if (!excludes.length) return false;
-  const nameLc = (name || '').toLowerCase();
-  let hostLc = '';
-  try { hostLc = new URL(profileUrl || '').hostname.toLowerCase(); } catch {}
-  return excludes.some(x => nameLc.includes(x) || (hostLc && hostLc.includes(x)));
-}
-
-function firstNonEmpty(...vals) {
-  for (const v of vals) {
-    if (v !== undefined && v !== null && String(v).trim() !== '') return v;
-  }
-  return '';
-}
-
-function joinIfArray(x, sep = ', ') {
-  return Array.isArray(x) ? x.filter(Boolean).join(sep) : (x ?? '');
-}
-
-function toRelative(raw) {
-  return firstNonEmpty(raw.postedTime, raw.posted_time, raw.timeAgo, raw.time_ago, raw.listedAtRelative, raw.posted);
-}
-function toPublishedAtISO(raw) {
-  return firstNonEmpty(raw.publishedAt, raw.postedAt, raw.datePosted, raw.listedAt, raw.createdAt);
-}
-function minutesFromRelative(rel) {
-  if (!rel) return Infinity;
-  const s = String(rel).toLowerCase();
-  const num = (re) => { const m = s.match(re); return m ? parseInt(m[1], 10) : 0; };
-  if (s.includes('just now')) return 0;
-  if (/(\d+)\s*(minute|min|m)\b/.test(s)) return num(/(\d+)\s*(?:minute|min|m)\b/);
-  if (/(\d+)\s*(hour|hr|h)\b/.test(s))   return num(/(\d+)\s*(?:hour|hr|h)\b/) * 60;
-  if (/(\d+)\s*(day|d)\b/.test(s))       return num(/(\d+)\s*(?:day|d)\b/) * 1440;
-  if (/(\d+)\s*(week|w)\b/.test(s))      return num(/(\d+)\s*(?:week|w)\b/) * 10080;
-  return Infinity;
-}
-function newestTimestamp(raw) {
-  // Prefer ISO timestamp, else derive from relative
-  const iso = toPublishedAtISO(raw);
-  if (iso && /^\d{4}-\d{2}-\d{2}T/.test(String(iso))) {
-    const t = new Date(iso).getTime();
-    return Number.isFinite(t) ? t : 0;
-  }
-  const rel = toRelative(raw);
-  const mins = minutesFromRelative(rel);
-  if (!Number.isFinite(mins)) return 0;
-  return Date.now() - mins * 60000;
-}
-
-/* ------------------- Apify actor call (bebity) ------------------- */
-async function runApifyLinkedInJobs({ title, location, rows, publishedAt, workType, experienceLevel, companyName }) {
-  const ACTOR_ID = process.env.APIFY_ACTOR_ID || 'bebity~linkedin-jobs-scraper';
-  const token = process.env.APIFY_TOKEN;
-  if (!token) throw new Error('APIFY_TOKEN missing');
-
-  const url = new URL(`https://api.apify.com/v2/acts/${ACTOR_ID}/run-sync-get-dataset-items`);
-  url.searchParams.set('token', token);
-  url.searchParams.set('format', 'json');
-
-  // NOTE: we deliberately DO NOT pass contractType (job type) to keep its relevance low
-  const input = {
-    title: title || '',
-    location: location || DEFAULT_LOCATION,
-    rows: Math.max(1, Number(rows) || 50),
-    publishedAt: publishedAt || 'r86400',         // default 24h (latest)
-    workType: workType || undefined,              // 1 onsite, 2 remote, 3 hybrid
-    experienceLevel: experienceLevel || undefined, // 1..5
-    companyName: (Array.isArray(companyName) && companyName.length) ? companyName : undefined,
-  };
-
-  const apiRes = await fetch(url.toString(), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
+async function fetchSnapshotOnce(snapshotId) {
+  // Request array JSON. If BD still gives NDJSON or file_url, we handle below.
+  const r = await fetch(SNAPSHOT_URL(snapshotId, { format: 'json', batchSize: 10000 }), {
+    headers: { Authorization: `Bearer ${BDATA_KEY}` },
   });
 
-  if (!apiRes.ok) {
-    const txt = await apiRes.text().catch(() => '');
-    throw new Error(`Apify ${ACTOR_ID} ${apiRes.status}: ${txt || apiRes.statusText}`);
+  const text = await r.text();
+
+  // 202 = “Snapshot is not ready yet, try again in Xs”
+  if (r.status === 202) {
+    const waitSec = parseInt((text.match(/\d+/) || [10])[0], 10);
+    return { state: 'waiting', waitMs: waitSec * 1000, raw: text };
   }
-  const data = await apiRes.json();
-  return Array.isArray(data) ? data : [];
-}
 
-/* -------------------- Normalize to requested columns -------------------- */
-function normalizeToRequestedColumns(raw) {
-  const title = firstNonEmpty(raw.title, raw.jobTitle, raw.position);
-  const location = firstNonEmpty(raw.location, raw.jobLocation);
-  const postedTime = toRelative(raw);
-  const publishedAt = toPublishedAtISO(raw);
-  const jobUrl = firstNonEmpty(raw.jobUrl, raw.jobLink, raw.url, raw.link);
-  const companyName = firstNonEmpty(raw.companyName, raw.company);
-  const companyUrl = firstNonEmpty(raw.companyUrl, raw.companyProfile, raw.company_link);
-  const description = firstNonEmpty(raw.description, raw.jobDescription, raw.plainDescription);
-  const applicationsCount = firstNonEmpty(raw.applicationsCount, raw.numApplicants, raw.applicants, raw.applicantCount, raw.applications);
-  const contractType = firstNonEmpty(raw.contractType, raw.employmentType, raw.jobType);
-  const experienceLevel = firstNonEmpty(raw.experienceLevel, raw.seniority, raw.seniorityLevel);
-  const workType = firstNonEmpty(raw.workType); // per your mapping: "Job function" -> workType
-  const sector = firstNonEmpty(raw.sector, joinIfArray(raw.industries));
-  const salary = firstNonEmpty(raw.salary, raw.pay, raw.compensation);
-  const posterFullName = firstNonEmpty(raw.posterFullName, raw.posterName);
-  const posterProfileUrl = firstNonEmpty(raw.posterProfileUrl, raw.posterUrl, raw.recruiterUrl);
-  const companyId = firstNonEmpty(raw.companyId);
-  const applyUrl = firstNonEmpty(raw.applyUrl, raw.applicationUrl);
-  const applyType = firstNonEmpty(raw.applyType, raw.applicationType, raw.apply_type);
-  const benefits = joinIfArray(raw.benefits);
+  if (!r.ok) {
+    // BD sometimes returns plain text (“Snapshot is empty”) with 4xx
+    if (/snapshot is empty/i.test(text)) return { state: 'ready', items: [] };
+    throw new Error(`BrightData snapshot ${r.status}: ${text}`);
+  }
 
-  return {
-    'Title': title,
-    'Location': location,
-    'Posted time': postedTime, 
-    'Published at': publishedAt, 
-    'Job Url': jobUrl, 
-    'Company Name': companyName, 
-    'Campany Url': companyUrl, 
-    'Description': description, 
-    'Applications count': String(applicationsCount ?? '').trim(),
-    'Employment type': contractType, 
-    'Seniority level': experienceLevel, 
-    'Job function': workType,
-    'Industries': sector, 
-    'Salary': salary, 
-    'Posted by': posterFullName, 
-    'Poster profile url': posterProfileUrl, 
-    'Company ID': companyId,
-    'Apply Url': applyUrl, 
-    'Apply Type': applyType, 
-    'Benefits': benefits
-  };
-}
-
-/* ----------------------------- Route ----------------------------- */
-
-app.post('/api/fetch-jobs', async (req, res) => {
+  // 200 OK — can be an array, or an object with items/file_url, or NDJSON
   try {
-    const {
-      field,                 // -> title
-      location,
-      sort_by,               // "day" (default), "week", "month"
-      work_type,             // onsite/remote/hybrid (1/2/3)
-      filter_by_company,     // comma list -> companyName[]
+    const json = JSON.parse(text);
 
-      // SINGLE experience level (optional)
-      exp_levels,            // internship/entry_level/associate/mid_senior_level/director/executive
+    // Case A: Direct array of items
+    if (Array.isArray(json)) return { state: 'ready', items: json };
 
-      // sheet params
-      sheet_id,
-      sheet_name = 'Sheet1',
+    // Case B: Object with items
+    if (json?.items && Array.isArray(json.items)) {
+      return { state: 'ready', items: json.items };
+    }
 
-      // total result target (exact rows for Apify)
-      total_records = 50,
+    // Case C: Object with file_url → fetch it (JSON or NDJSON)
+    if (json?.file_url) {
+      const fr = await fetch(json.file_url);
+      const ftext = await fr.text();
+      try {
+        const fjson = JSON.parse(ftext);
+        if (Array.isArray(fjson)) return { state: 'ready', items: fjson };
+        if (fjson?.items && Array.isArray(fjson.items)) {
+          return { state: 'ready', items: fjson.items };
+        }
+      } catch {
+        // NDJSON fallback from file_url
+        return { state: 'ready', items: parseNdjson(ftext) };
+      }
+      // Unexpected but handled above; fallback to empty
+      return { state: 'ready', items: [] };
+    }
 
-      // optional
-      last_hour_only = false,
-    } = req.body || {};
+    // Fallback: if structure is unexpected, treat as none
+    return { state: 'ready', items: [] };
+  } catch {
+    // Non-JSON 200 → often NDJSON: handle it
+    if (/snapshot is empty/i.test(text)) return { state: 'ready', items: [] };
+    return { state: 'ready', items: parseNdjson(text) };
+  }
+}
 
+/**
+ * Polls the snapshot until it’s ready (or until max wait reached).
+ * @param {string} snapshotId
+ * @param {{ maxWaitMs?: number, baseDelayMs?: number, backoffCapMs?: number }} opts
+ * @returns {Promise<Array>} items
+ */
+async function pollSnapshotUntilReady(
+  snapshotId,
+  {
+    maxWaitMs = 15 * 60 * 1000, // 15 minutes default
+    baseDelayMs = 5000,         // min backoff
+    backoffCapMs = 60000,       // cap backoff at 60s
+  } = {}
+) {
+  const start = Date.now();
+  let attempt = 0;
+
+  while (true) {
+    const { state, waitMs, items, raw } = await fetchSnapshotOnce(snapshotId);
+    if (state === 'ready') return items || [];
+
+    attempt += 1;
+    // Use BD’s suggested wait if present, otherwise exponential backoff
+    const backoff = Math.min(baseDelayMs * attempt, backoffCapMs);
+    const delay = Math.max(waitMs || 0, backoff);
+
+    if (Date.now() - start + delay > maxWaitMs) {
+      throw new Error(`Timed out waiting for snapshot. Last msg: ${raw || 'no message'}`);
+    }
+    await sleep(delay);
+  }
+}
+
+// ===== ONE trigger attempt (schema = 'classic' | 'generic') =====
+async function triggerOnce(datasetId, { schema, keyword, country, limit }) {
+  const limitNum = Math.max(1, Math.min(Number(limit) || 25, 100));
+
+  const qs = new URLSearchParams({
+    dataset_id: datasetId,
+    include_errors: 'true',
+    type: 'discover_new',
+    discover_by: 'keyword',
+    limit_per_input: String(limitNum),
+  });
+  const url = `${BDATA_API}/trigger?${qs.toString()}`;
+
+  let inputs;
+  if (schema === 'classic') {
+    // Many LinkedIn jobs datasets accept this minimal shape
+    inputs = [
+      {
+        keyword: String(keyword || ''),
+        location: locationFromCountry(country),
+      },
+    ];
+  } else if (schema === 'generic') {
+    // Some datasets require generic names
+    inputs = [
+      {
+        keyword_search: String(keyword || ''),
+        domain: 'linkedin.com',
+        country: String(country || 'US').toUpperCase(),
+        location: locationFromCountry(country),
+      },
+    ];
+  } else {
+    throw new Error(`Unknown schema: ${schema}`);
+  }
+
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${BDATA_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(inputs),
+  });
+
+  const text = await r.text();
+  if (!r.ok) throw new Error(`BrightData trigger ${r.status}: ${text}`);
+
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error(text || 'Trigger returned non-JSON');
+  }
+  if (!json?.snapshot_id) throw new Error(`No snapshot_id in response: ${text}`);
+
+  return json.snapshot_id;
+}
+
+// ===== Auto schema (classic → generic fallback) =====
+async function triggerAuto(datasetId, { keyword, country, limit }) {
+  try {
+    return await triggerOnce(datasetId, { schema: 'classic', keyword, country, limit });
+  } catch (e) {
+    const msg = String(e?.message || '');
+    if (isValidationErr(msg)) {
+      return await triggerOnce(datasetId, { schema: 'generic', keyword, country, limit });
+    }
+    throw e;
+  }
+}
+
+// ===== Dynamic headers & rows (use response keys exactly) =====
+function collectHeaders(items, { maxSample = 1000, excludeKeys = [] } = {}) {
+  const seen = new Set();
+  const headers = [];
+  const exclude = new Set(excludeKeys);
+  for (let i = 0; i < items.length && i < maxSample; i++) {
+    const it = items[i];
+    if (it && typeof it === 'object' && !Array.isArray(it)) {
+      for (const k of Object.keys(it)) {
+        if (!exclude.has(k) && !seen.has(k)) {
+          seen.add(k);
+          headers.push(k); // preserve first-seen order
+        }
+      }
+    }
+  }
+  return headers;
+}
+
+function normalizeRowToHeaders(item, headers) {
+  const row = {};
+  for (const h of headers) {
+    let v = item?.[h];
+    if (v === undefined || v === null) v = '';
+    if (typeof v === 'object') {
+      try { v = JSON.stringify(v); } catch { v = String(v); }
+    }
+    row[h] = String(v);
+  }
+  return row;
+}
+
+function buildRows(items, headers, limit) {
+  return items.slice(0, limit).map((it) => normalizeRowToHeaders(it, headers));
+}
+
+// ===== Route: trigger → wait until ready → append =====
+app.post('/api/fetch', async (req, res) => {
+  // Disable per-response timeout so we can wait
+  res.setTimeout(0);
+
+  try {
+    const { sheet_id, keyword, country = 'US', count = 25 } = req.body || {};
     if (!sheet_id) {
       return res.status(400).json({ success: false, message: 'sheet_id is required' });
     }
-    if (!process.env.APIFY_TOKEN) {
-      return res.status(400).json({ success: false, message: 'APIFY_TOKEN missing' });
+    if (!DS_LINKEDIN) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'BRIGHTDATA_LINKEDIN_DATASET_ID not configured' });
     }
 
-    const excludeList = EXCLUDE_COMPANIES.map(s => s.toLowerCase());
-    const TOTAL = Math.max(1, Number(total_records));
-    const publishedAt = mapPublishedAt(sort_by);     // default 24h (latest window)
-    const workType = mapWorkType(work_type);
-    const expCode = mapExperienceLevel(exp_levels);
-    const companyNames = filter_by_company ? toArray(filter_by_company) : undefined;
+    const limit = Math.max(1, Math.min(Number(count) || 25, 100));
 
-    // Single, fast Apify call
-    const items = await runApifyLinkedInJobs({
-      title: field,
-      location,
-      rows: TOTAL,
-      publishedAt,
-      workType,
-      experienceLevel: expCode,
-      companyName: companyNames,
+    // 1) Trigger dataset snapshot
+    const snapshotId = await triggerAuto(DS_LINKEDIN, { keyword, country, limit });
+    console.log('📌 LinkedIn snapshot_id:', snapshotId);
+
+    // 2) Poll until snapshot is ready
+    console.log('⏳ Waiting for snapshot to be ready…');
+    const allItems = await pollSnapshotUntilReady(snapshotId, {
+      maxWaitMs: Infinity, // ⚠️ your host/proxy may still have hard caps
+      baseDelayMs: 5000,
+      backoffCapMs: 60000,
     });
 
-    // Sort newest -> oldest (independent of actor order)
-    items.sort((a, b) => newestTimestamp(b) - newestTimestamp(a));
+    console.log('✅ Snapshot ready. Items:', allItems.length);
 
-    // Filter, dedupe, and cap to TOTAL
-    const seen = new Set();
-    const rows = [];
-    for (const raw of items) {
-      // Optional last-hour filter
-      if (last_hour_only) {
-        const rel = toRelative(raw);
-        let mins = minutesFromRelative(rel);
-        if (!Number.isFinite(mins)) {
-          const iso = toPublishedAtISO(raw);
-          if (iso) {
-            const t = new Date(iso).getTime();
-            if (Number.isFinite(t)) mins = (Date.now() - t) / 60000;
-          }
-        }
-        if (!Number.isFinite(mins) || mins > 60) continue;
-      }
+    // 3) Build headers EXACTLY from response keys, then rows, then append
+    const headers = collectHeaders(allItems);
+    console.log('🧾 Derived headers:', headers);
 
-      const companyName = firstNonEmpty(raw.companyName, raw.company);
-      const companyUrl = firstNonEmpty(raw.companyUrl, raw.companyProfile, raw.company_link);
-      if (companyIsExcluded(companyName, companyUrl, excludeList)) continue;
-
-      const jobUrl = firstNonEmpty(raw.jobUrl, raw.jobLink, raw.url, raw.link);
-      const title = firstNonEmpty(raw.title, raw.jobTitle, raw.position);
-      const locationStr = firstNonEmpty(raw.location, raw.jobLocation);
-      const key = `${jobUrl}|${companyName}|${title}|${locationStr}`;
-      if (seen.has(key)) continue;
-
-      seen.add(key);
-      rows.push(normalizeToRequestedColumns(raw));
-      if (rows.length >= TOTAL) break;
-    }
-
-    if (rows.length) {
-      await appendToGoogleSheet(rows, {
-        sheetId: sheet_id,
-        sheetName: sheet_name,
-        headers: HEADERS,
-        insertHeadersIfMissing: true,
-        valueInputOption: 'RAW'
+    if (!headers.length) {
+      return res.json({
+        success: true,
+        snapshot_id: snapshotId,
+        total_found: 0,
+        appended: 0,
+        preview: [],
       });
-      console.log(`✅ Appended ${rows.length} rows to sheet ${sheet_id} (${sheet_name})`);
-    } else {
-      console.log('ℹ️ No rows to append.');
     }
 
-    res.json({
-      success: true,
-      saved: rows.length,
-      requested: TOTAL,
-      jobs: rows   // so your UI preview works immediately
+    const rows = buildRows(allItems, headers, limit);
+
+    await appendToGoogleSheet(rows, {
+      sheetId: sheet_id,
+  sheetName: 'Sheet1',
+  headers,                    // from collectHeaders(...)
+  insertHeadersIfMissing: true,
+  valueInputOption: 'RAW',
+  firstDataColIndex: 2,  
     });
 
+    // 4) Respond after appending
+    return res.json({
+      success: true,
+      snapshot_id: snapshotId,
+      total_found: allItems.length,
+      appended: rows.length,
+      preview: rows.slice(0, 5),
+    });
   } catch (err) {
-    console.error('❌ Error in /api/fetch-jobs:', err);
-    res.status(500).json({ success: false, message: err?.message || String(err) });
+    console.error('❌ Error in /api/fetch:', err);
+    return res.status(500).json({ success: false, message: err?.message || String(err) });
   }
 });
 
-app.listen(PORT, () => {
+// ===== Start HTTP server with no request timeout (so long waits won't be killed by Node) =====
+const server = createServer(app);
+server.requestTimeout = 0;  // disable overall request timeout
+server.headersTimeout = 0;  // optional: disable header timeout for very long waits
+server.keepAliveTimeout = 75_000;
+
+server.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
