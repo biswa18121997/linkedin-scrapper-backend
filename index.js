@@ -32,7 +32,6 @@ function ensureQueryAndKeyword(input, fallback = 'Software Engineer') {
   return out;
 }
 
-// Build a US Indeed search URL from query + location
 function buildIndeedSearchUrl({ query, location }) {
   const base = 'https://www.indeed.com/jobs';
   const params = new URLSearchParams();
@@ -41,17 +40,10 @@ function buildIndeedSearchUrl({ query, location }) {
   return `${base}?${params.toString()}`;
 }
 
-/**
- * Map inputs per actor quirks.
- * For curious_coder~indeed-scraper, return the *minimal* payload ONLY:
- *   { scrapeJobs: { searchUrl }, count }
- * For others, keep normalized generic inputs.
- */
 function mapInputForActor(actorId, rawInput, { fallbackKeyword = 'Software Engineer', limit } = {}) {
   const idRaw = String(actorId || '');
   const id = idRaw.toLowerCase().replace(/\s+/g, '');
 
-  // generic normalization first
   let input = ensureUSDefaults(rawInput || {});
   input = ensureQueryAndKeyword(input, fallbackKeyword);
 
@@ -73,9 +65,7 @@ function mapInputForActor(actorId, rawInput, { fallbackKeyword = 'Software Engin
 // ===============================
 // Apify Client
 // ===============================
-const client = new ApifyClient({
-  token: process.env.APIFY_API_KEY,
-});
+const client = new ApifyClient({ token: process.env.APIFY_API_KEY });
 
 // ===============================
 // Utilities for Sheet rows
@@ -95,12 +85,6 @@ function collectHeaders(items, { maxSample = 1000 } = {}) {
     }
   }
   return headers;
-}
-
-function buildFinalHeaders(apiHeaders, opts = {}) {
-  const tickCol = opts.tickColName ?? 'Done';
-  const userCol = opts.userColName ?? 'userID';
-  return [tickCol, ...apiHeaders, userCol];
 }
 
 function buildRowsWithTickAndUser(items, apiHeaders, { userID, tickColName = 'Done', userColName = 'userID', limit } = {}) {
@@ -175,25 +159,19 @@ app.post('/api/fetch', async (req, res) => {
       glassdoor: process.env.APIFY_GLASSDOOR_ACTOR,
     };
 
-    // Map inputs per actor (adds US defaults, keyword; special-case for Indeed)
     const normLinkedIn  = mapInputForActor(ACTORS.linkedin,  linkedinInput,  { limit });
     const normIndeed    = mapInputForActor(ACTORS.indeed,    indeedInput,    { limit });
     const normGlassdoor = mapInputForActor(ACTORS.glassdoor, glassdoorInput, { limit });
 
-    console.log('🔎 Final inputs:', {
-      linkedin: normLinkedIn,
-      indeed: normIndeed,
-      glassdoor: normGlassdoor,
-    });
+    console.log('🔎 Final inputs:', { linkedin: normLinkedIn, indeed: normIndeed, glassdoor: normGlassdoor });
 
-    // SAFE parallel runs: none of these will throw thanks to safeRun
+    // SAFE parallel runs
     const [rLi, rIn, rGd] = await Promise.all([
       safeRun('linkedin',  ACTORS.linkedin,  normLinkedIn,  { limit }),
       safeRun('indeed',    ACTORS.indeed,    normIndeed,    { limit }),
       safeRun('glassdoor', ACTORS.glassdoor, normGlassdoor, { limit }),
     ]);
 
-    // Per-source append (each in its own try/catch)
     const plan = [
       { key: 'linkedin',  items: rLi.items, error: rLi.error, sheetName: 'Sheet1' },
       { key: 'indeed',    items: rIn.items, error: rIn.error, sheetName: 'Sheet2' },
@@ -207,25 +185,20 @@ app.post('/api/fetch', async (req, res) => {
       let rows = [];
 
       try {
-        const apiHeaders = collectHeaders(p.items);
-        headers = buildFinalHeaders(apiHeaders, { tickColName: 'Done', userColName: 'userID' });
+        const apiHeaders = collectHeaders(p.items);   // ← ONLY API keys
+        headers = apiHeaders;
+
         rows = p.items.length
-          ? buildRowsWithTickAndUser(p.items, apiHeaders, {
-              userID,
-              tickColName: 'Done',
-              userColName: 'userID',
-              limit,
-            })
+          ? buildRowsWithTickAndUser(p.items, apiHeaders, { userID, limit })
           : [];
 
         if (rows.length) {
           await appendToGoogleSheet(rows, {
             sheetId: sheet_id,
             sheetName: p.sheetName,
-            headers,
+            headers: apiHeaders,        // helper adds Done + userID in the header row
             insertHeadersIfMissing: true,
             valueInputOption: 'RAW',
-            firstDataColIndex: 0,
           });
         }
       } catch (e) {
@@ -234,8 +207,8 @@ app.post('/api/fetch', async (req, res) => {
       }
 
       per_source[p.key] = {
-        run_error: p.error || null,       // actor run error (if any)
-        append_error: appendErr,          // append error (if any)
+        run_error: p.error || null,
+        append_error: appendErr,
         total_found: p.items.length,
         appended: rows.length || 0,
         headers,
@@ -244,22 +217,11 @@ app.post('/api/fetch', async (req, res) => {
     }
 
     const tookMs = Date.now() - startedAt;
-
-    // success if at least one source appended or had items
     const anySuccess = Object.values(per_source).some(s => (s.appended || 0) > 0 || s.total_found > 0);
-    return res.json({
-      success: anySuccess,
-      took_ms: tookMs,
-      per_source,
-    });
+    return res.json({ success: anySuccess, took_ms: tookMs, per_source });
   } catch (err) {
     console.error('❌ /api/fetch fatal error:', err);
-    // Even on unexpected fatal errors, respond with 200 + partial info style if possible
-    return res.status(200).json({
-      success: false,
-      message: err?.message || String(err),
-      per_source: {},
-    });
+    return res.status(200).json({ success: false, message: err?.message || String(err), per_source: {} });
   }
 });
 
