@@ -48,7 +48,7 @@ export default async function Linkedin(req, res, next) {
         Object.keys(input).forEach((k) => input[k] === undefined && delete input[k]);
         console.log('process started..');
         // NOTE: ensure the actor ID is correct for LinkedIn scraper
-        const run = await client.actor('9eTAaHrnHrljnL3Tg').call(input);
+        const run = await client.actor('BHzefUZlZRKWxkTck').call(input);
         const { items } = await client.dataset(run.defaultDatasetId).listItems();
         req.body.linkedInItems = items || [];
         const sheetId = req.body.sheet_id;            // <-- from frontend
