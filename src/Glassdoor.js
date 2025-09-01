@@ -1,169 +1,123 @@
-// glassdoorBrightData.js
-// Node 18+ (global fetch). For Node 16, `npm i node-fetch` and `import fetch from 'node-fetch'`.
+import { ApifyClient } from 'apify-client';
+import 'dotenv/config';
+import { appendToGoogleSheet } from '../utils/GoogleSheetsHelper.js';
+// import Linkedin from './Linkedin';
 
-const API = "https://api.brightdata.com/datasets/v3";
-const API_KEY = process.env.BRIGHT_DATA_API_KEY;
-
-// Replace or set in env:
-const GLASSDOOR_DATASET_ID =
-  process.env.BRIGHTDATA_GLASSDOOR_DATASET_ID || "gd_xxxxxxxxxxxxx";
-
-/* -------------------- shared helpers -------------------- */
-function authHeaders() {
-  if (!API_KEY) throw new Error("Missing BRIGHT_DATA_API_KEY env var.");
-  return { Authorization: `Bearer ${API_KEY}`, "Content-Type": "application/json" };
+function unionKeys(rows) {
+  const s = new Set();
+  for (const r of rows || []) if (r && typeof r === 'object') {
+    for (const k of Object.keys(r)) s.add(k);
+  }
+  return Array.from(s);
 }
 
-async function triggerSnapshot(datasetId, inputs, {
-  type = "search",            // "search" is faster than "discover_new"
-  discover_by = "keyword",
-  include_errors = true
-} = {}) {
-  const url = `${API}/trigger?dataset_id=${encodeURIComponent(datasetId)}`
-    + `&type=${type}&discover_by=${discover_by}&include_errors=${include_errors}`;
-
-  const r = await fetch(url, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify(inputs),
-  });
-  if (!r.ok) throw new Error(`Trigger failed: ${r.status} ${await r.text()}`);
-  return r.json(); // { snapshot_id }
-}
-
-async function getPartsInfo(snapshotId) {
-  const r = await fetch(`${API}/snapshot/${snapshotId}/parts`, { headers: authHeaders() });
-  if (!r.ok) throw new Error(`Parts query failed: ${r.status} ${await r.text()}`);
-  return r.json(); // { total_parts: number }
-}
-
-async function downloadPart(snapshotId, partIndex) {
-  const r = await fetch(`${API}/snapshot/${snapshotId}/download?format=json&part=${partIndex}`, {
-    headers: authHeaders()
-  });
-  if (!r.ok) return []; // may not be ready yet
-  return r.json();
-}
-
-function normalizeJob(j) {
-  return {
-    source: j.source || "glassdoor",
-    title: j.title || j.position || null,
-    company: j.company || j.companyName || null,
-    location: j.location || j.jobLocation || null,
-    url: j.url || j.jobUrl || j.jobLink || null,
-    posted_at: j.postedAt || j.publishedAt || j.datePosted || null,
-    description: j.description || j.snippet || j.plainDescription || null,
-    _raw: j,
+export default async function Glassdoor(req, res) {
+  let mapofTypes = {
+    F: 'fulltime',
+    P: 'parttime',
+    C: 'contract',
+    T: 'temporary',
+    I: 'internship',
+    V: 'volunteer',
   };
-}
+  let mapofSeniority = {
+    all: 'all',
+    1: 'internship',
+    2: 'entrylevel',
+    3: 'midseniorlevel',
+    4: 'director',
+    5: 'executive',
+  };
+  let mapOfPublish = {
+    r86400: '1',
+    r259200: '3',
+    r604800: '7',
+    r1209600: '14',
+    r2592000: '30',
+  };
 
-/** Collect parts until `limit` or `timeoutMs`. */
-async function collectSnapshot(snapshotId, {
-  limit = 20,
-  timeoutMs = 60000,
-  pollMs = 2000
-} = {}) {
-  const start = Date.now();
-  const seen = new Set();
-  const out = [];
+  // Initialize the ApifyClient with API token
+  const client = new ApifyClient({
+    token: process.env.APIFY_API_KEY,
+  });
 
-  while (Date.now() - start < timeoutMs && out.length < limit) {
-    const { total_parts = 0 } = await getPartsInfo(snapshotId);
-    for (let i = 0; i < total_parts; i++) {
-      if (seen.has(i)) continue;
-      const records = await downloadPart(snapshotId, i);
-      if (records.length) {
-        seen.add(i);
-        for (const rec of records) {
-          out.push(normalizeJob(rec));
-          if (out.length >= limit) break;
+  // Prepare Actor input
+  const input = {
+    keyword: req.body.title,
+    maxItems: Number(req.body.limit),
+    fromAge : mapofPublish[req.body.publishedAt],
+    baseUrl: 'https://www.glassdoor.com',
+    includeNoSalaryJob: false,
+    minSalary: 0,
+    jobType: mapofTypes[req.body.contractType],
+    radius: '0',
+    industryType: 'ALL',
+    domainType: 'ALL',
+    employerSizes: 'ALL',
+    applicationType: 'ALL',
+    seniorityType: mapofSeniority[req.body.experienceLevel],
+    remoteWorkType: req.body.workType == '1' ? false : true,
+    minRating: '0',
+    proxy: {
+      useApifyProxy: true,
+      apifyProxyGroups: ['RESIDENTIAL'],
+    },
+  };
+
+  (async () => {
+    // Run the Actor and wait for it to finish
+    const run = await client.actor('t2FNNV3J6mvckgV2g').call(input);
+
+    // Fetch and print Actor results from the run's dataset (if any)
+    console.log('Results from dataset');
+    const { items } = await client.dataset(run.defaultDatasetId).listItems();
+    // items.forEach((item) => {
+    //   console.dir(item);
+    // });
+
+    try {
+      if (req.body.fetchfrom.includes('glassdoor')) {
+        const sheetId = req.body.sheet_id; // from frontend
+        const sheetName = 'Sheet3';
+        const userID = String(req.body.userID || '');
+
+        if (sheetId) {
+          const rows = (items || []).map((obj) => ({ ...obj, userID }));
+          const headers = unionKeys(rows); // column headers as key names (requirement)
+
+          await appendToGoogleSheet(rows, {
+            sheetId,
+            sheetName,
+            headers, // your helper will enforce [Done, ...headers, userID]
+            valueInputOption: 'RAW',
+            tickColName: 'Done',
+            userColName: 'userID',
+          });
+
+          console.log('glassdoor :- appended to google sheets');
+
+          res.status(200).json({
+            messgae: 'scrape document..',
+            Linkedin: req.body.linkedInItems,
+            glassdoorItems: items,
+          });
+        } else {
+          console.warn('Glassdoor: sheetId missing in request; skipping sheet append.');
+          res.status(200).json({
+            messgae: 'scrape document..',
+            Linkedin: req.body.linkedInItems,
+            glassdoorItems: items,
+          });
         }
-      }
-      if (out.length >= limit) break;
-    }
-    if (out.length >= limit) break;
-    await new Promise(r => setTimeout(r, pollMs));
-  }
-  return out.slice(0, limit);
-}
-
-/* -------------------- 1) QUICK / “INSTANT” -------------------- */
-/**
- * Single small query with short timeout. Good for ~10–30 results.
- * Params:
- *  - keyword, location, job_type, experience_level, remote, company
- *  - limit (default 20), timeoutMs (default 45s)
- *  - datasetId (optional), mode: "search"|"discover_new" (default "search")
- */
-export async function fetchGlassdoorJobsQuick({
-  keyword,
-  location,
-  job_type = "",
-  experience_level = "",
-  remote = "",
-  company = "",
-  limit = 20,
-  timeoutMs = 45000,
-  datasetId = GLASSDOOR_DATASET_ID,
-  mode = "search",
-} = {}) {
-  const input = [{
-    keyword,
-    location,
-    job_type,
-    experience_level,
-    remote,
-    company,
-  }];
-
-  const { snapshot_id } = await triggerSnapshot(datasetId, input, { type: mode, discover_by: "keyword" });
-  return collectSnapshot(snapshot_id, { limit, timeoutMs, pollMs: 1500 });
-}
-
-/* -------------------- 2) BULK / PARALLEL -------------------- */
-/**
- * Many queries (array of inputs), higher limits, parallelized.
- * Params:
- *  - inputs: [{ keyword, location, job_type, experience_level, remote, company, limit? }, ...]
- *  - perInputLimit (default 40), timeoutMs (default 3 min), concurrency (default 3)
- *  - datasetId (optional), mode (default "search")
- */
-export async function fetchGlassdoorJobsBulk({
-  inputs,
-  perInputLimit = 40,
-  timeoutMs = 180000,
-  concurrency = 3,
-  datasetId = GLASSDOOR_DATASET_ID,
-  mode = "search",
-} = {}) {
-  if (!Array.isArray(inputs) || inputs.length === 0) return [];
-
-  const results = [];
-  const queue = inputs.map((p, idx) => ({ idx, p }));
-
-  async function worker() {
-    while (queue.length) {
-      const { p } = queue.shift();
-      try {
-        const { snapshot_id } = await triggerSnapshot(datasetId, [p], { type: mode, discover_by: "keyword" });
-        const items = await collectSnapshot(snapshot_id, {
-          limit: p.limit || perInputLimit,
-          timeoutMs,
-          pollMs: 2000,
+      } else {
+        res.status(200).json({
+          messgae: 'scrape document..',
+          Linkedin: req.body.linkedInItems,
+          // glassdoorItems : items
         });
-        results.push(...items);
-      } catch (e) {
-        console.error("Glassdoor bulk worker error:", e?.message || e);
       }
+    } catch (e) {
+      console.error('Glassdoor sheet append failed:', e?.message || e);
     }
-  }
-
-  const workers = Array.from(
-    { length: Math.max(1, Math.min(concurrency, inputs.length)) },
-    () => worker()
-  );
-  await Promise.all(workers);
-
-  return results;
+  })();
 }

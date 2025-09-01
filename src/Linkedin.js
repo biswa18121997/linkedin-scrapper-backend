@@ -1,155 +1,84 @@
+import { ApifyClient } from 'apify-client';
+import dotenv from 'dotenv/config';
+import { appendToGoogleSheet } from '../utils/GoogleSheetsHelper.js';
 
-// linkedinBrightData.js
-// Node 18+ (global fetch). For Node 16, `npm i node-fetch` and `import fetch from 'node-fetch'`.
-
-const API = "https://api.brightdata.com/datasets/v3";
-const API_KEY = process.env.BRIGHT_DATA_API_KEY;
-
-// default dataset id (override per call if you want)
-const LINKEDIN_DATASET_ID = process.env.BRIGHTDATA_LINKEDIN_DATASET_ID || "gd_xxxxxxxxxxxxx";
-
-/* -------------------- shared helpers -------------------- */
-
-function authHeaders() {
-  if (!API_KEY) throw new Error("Missing BRIGHT_DATA_API_KEY env var.");
-  return { Authorization: `Bearer ${API_KEY}`, "Content-Type": "application/json" };
+function toPositiveInt(value, fallback = 25) {
+  const n = Number.parseInt(String(value ?? '').trim(), 10);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
-async function triggerSnapshot(datasetId, inputs, { type = "search", discover_by = "keyword", include_errors = true } = {}) {
-  const url = `${API}/trigger?dataset_id=${encodeURIComponent(datasetId)}&type=${type}&discover_by=${discover_by}&include_errors=${include_errors}`;
-  const r = await fetch(url, { method: "POST", headers: authHeaders(), body: JSON.stringify(inputs) });
-  if (!r.ok) throw new Error(`Trigger failed: ${r.status} ${await r.text()}`);
-  return r.json(); // { snapshot_id }
+function normalizePublishedAt(v) {
+  // your special cases → map to valid window codes
+  if (v === 'r259200') return 'r604800';   // 3d → 7d
+  if (v === 'r1209600') return 'r604800';  // 14d → 7d
+  return typeof v === 'string' && v.startsWith('r') ? v : undefined;
+}
+function unionKeys(rows) {
+  const s = new Set();
+  for (const r of rows || []) if (r && typeof r === 'object') {
+    for (const k of Object.keys(r)) s.add(k);
+  }
+  return Array.from(s);
 }
 
-async function getPartsInfo(snapshotId) {
-  const r = await fetch(`${API}/snapshot/${snapshotId}/parts`, { headers: authHeaders() });
-  if (!r.ok) throw new Error(`Parts query failed: ${r.status} ${await r.text()}`);
-  return r.json(); // { total_parts: number }
-}
+export default async function Linkedin(req, res, next) {
+  try {
+    if(req.body?.fetchfrom?.includes('linkedin')){
 
-async function downloadPart(snapshotId, partIndex) {
-  const r = await fetch(`${API}/snapshot/${snapshotId}/download?format=json&part=${partIndex}`, { headers: authHeaders() });
-  if (!r.ok) return []; // part may not be ready; caller will retry later
-  return r.json(); // array of records
-}
+        const client = new ApifyClient({ token: process.env.APIFY_API_KEY});
+        const limit = toPositiveInt(req.body.limit, 25);
+        // Build input and omit undefined values so the schema stays clean
+        const input = {
+          title: (req.body.title ?? '').toString().trim(),
+          location: 'United States',
+          companyName: [],
+          companyId: [],
+          workType: req.body.workType ?? undefined,
+          contractType: req.body.contractType ?? undefined,
+          experienceLevel: req.body.experienceLevel ?? undefined,
+          publishedAt: normalizePublishedAt(req.body.publishedAt),
+          rows: limit,          // must be integer
+          maxItems: limit,      // must be integer
+          proxy: {
+            useApifyProxy: true,
+            apifyProxyGroups: ['RESIDENTIAL'],
+          },
+        };
+        // Remove undefined keys (important for strict schemas)
+        Object.keys(input).forEach((k) => input[k] === undefined && delete input[k]);
+        console.log('process started..');
+        // NOTE: ensure the actor ID is correct for LinkedIn scraper
+        const run = await client.actor('BHzefUZlZRKWxkTck').call(input);
+        const { items } = await client.dataset(run.defaultDatasetId).listItems();
+        req.body.linkedInItems = items || [];
+        const sheetId = req.body.sheet_id;            // <-- from frontend
+        const sheetName = 'Sheet1';
+        const userID = String(req.body.userID || '');
+        if (sheetId) {
+          // Build rows: include userID; your helper will put checkbox first col and userID last col.
+          const liRows = (items || []).map(obj => ({ ...obj, userID }));
 
-function normalizeJob(j) {
-  return {
-    source: j.source || "linkedin",
-    title: j.title || j.position || null,
-    company: j.company || j.companyName || null,
-    location: j.location || j.jobLocation || null,
-    url: j.url || j.jobUrl || j.jobLink || null,
-    posted_at: j.postedAt || j.publishedAt || j.datePosted || null,
-    description: j.description || j.plainDescription || null,
-    _raw: j,
-  };
-}
+          // Headers = union of keys from the rows (your helper will enforce [Done, ...headers, userID])
+          const headers = unionKeys(liRows);
 
-/**
- * Poll snapshot parts until we collect `limit` or hit `timeoutMs`
- */
-async function collectSnapshot(snapshotId, { limit = 20, timeoutMs = 60000, pollMs = 2000 } = {}) {
-  const start = Date.now();
-  const seen = new Set();
-  const out = [];
-
-  while (Date.now() - start < timeoutMs && out.length < limit) {
-    const { total_parts = 0 } = await getPartsInfo(snapshotId);
-    for (let i = 0; i < total_parts; i++) {
-      if (seen.has(i)) continue;
-      const records = await downloadPart(snapshotId, i);
-      if (records.length) {
-        seen.add(i);
-        for (const rec of records) {
-          out.push(normalizeJob(rec));
-          if (out.length >= limit) break;
+          await appendToGoogleSheet(liRows, {
+            sheetId,
+            sheetName,
+            headers,                 // headers as key names (requirement satisfied)
+            valueInputOption: 'RAW', // keep as is
+            tickColName: 'Done',     // your helper expects this name for the checkbox col
+            userColName: 'userID',   // last column
+          });
+          req.body.linkedin = items;
+          console.log('linkedin :- appended to google sheets');
+          } else {
+          console.warn('LinkedIn: sheetId missing in request; skipping sheet append.');
         }
-      }
-      if (out.length >= limit) break;
-    }
-    if (out.length >= limit) break;
-    await new Promise(r => setTimeout(r, pollMs));
+    }   
+  next();
+  } catch (err) {
+    console.error('LinkedIn actor error:', err?.message || err);
+    // pass the error to your error middleware instead of crashing the process
+  next();
   }
-  return out.slice(0, limit);
-}
-
-/* -------------------- 1) QUICK / “INSTANT” -------------------- */
-/**
- * Single small query with short timeout. Good for 10–30 results fast.
- * Params:
- *  - keyword, location, job_type, experience_level, remote, company
- *  - limit (default 20), timeoutMs (default 45s)
- *  - datasetId (optional override), mode: "search"|"discover_new" (default "search")
- */
-export async function fetchLinkedInJobsQuick({
-  keyword,
-  location,
-  job_type = "",
-  experience_level = "",
-  remote = "",
-  company = "",
-  limit = 20,
-  timeoutMs = 45000,
-  datasetId = LINKEDIN_DATASET_ID,
-  mode = "search",
-} = {}) {
-  const input = [{
-    keyword,
-    location,
-    job_type,
-    experience_level,
-    remote,
-    company,
-  }];
-
-  const { snapshot_id } = await triggerSnapshot(datasetId, input, { type: mode, discover_by: "keyword" });
-  return collectSnapshot(snapshot_id, { limit, timeoutMs, pollMs: 1500 });
-}
-
-/* -------------------- 2) BULK / PARALLEL -------------------- */
-/**
- * Many queries (array of inputs), higher per-input limits, parallelized.
- * Params:
- *  - inputs: array of { keyword, location, job_type, experience_level, remote, company, limit? }
- *  - perInputLimit (default 40), timeoutMs (default 3 min), concurrency (default 3)
- *  - datasetId (optional override), mode (default "search")
- */
-export async function fetchLinkedInJobsBulk({
-  inputs,
-  perInputLimit = 40,
-  timeoutMs = 180000,
-  concurrency = 3,
-  datasetId = LINKEDIN_DATASET_ID,
-  mode = "search",
-} = {}) {
-  if (!Array.isArray(inputs) || inputs.length === 0) return [];
-
-  // 1) trigger all snapshots (throttled)
-  const results = [];
-  const queue = inputs.map((p, idx) => ({ idx, p }));
-
-  async function worker() {
-    while (queue.length) {
-      const { p } = queue.shift();
-      try {
-        const { snapshot_id } = await triggerSnapshot(datasetId, [p], { type: mode, discover_by: "keyword" });
-        const items = await collectSnapshot(snapshot_id, {
-          limit: p.limit || perInputLimit,
-          timeoutMs,
-          pollMs: 2000,
-        });
-        results.push(...items);
-      } catch (e) {
-        // swallow per-input error but continue others
-        console.error("Bulk worker error:", e?.message || e);
-      }
-    }
-  }
-
-  const workers = Array.from({ length: Math.max(1, Math.min(concurrency, inputs.length)) }, () => worker());
-  await Promise.all(workers);
-
-  return results;
 }
