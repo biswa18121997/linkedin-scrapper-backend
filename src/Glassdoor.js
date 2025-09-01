@@ -45,7 +45,7 @@ export default async function Glassdoor(req, res) {
   const input = {
     keyword: req.body.title,
     maxItems: Number(req.body.limit),
-    fromAge : mapofPublish[req.body.publishedAt],
+    fromAge : mapOfPublish[req.body.publishedAt],
     baseUrl: 'https://www.glassdoor.com',
     includeNoSalaryJob: false,
     minSalary: 0,
