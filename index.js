@@ -8,6 +8,7 @@ import { appendToGoogleSheet } from './utils/GoogleSheetsHelper.js';
 import Linkedin from './src/Linkedin.js';
 import Glassdoor from './src/Glassdoor.js';
 import Indeed from './src/Indeed.js';
+import { withHeartbeat } from './src/withHeartbeat.js';
 
 dotenv.config();
 
@@ -17,7 +18,15 @@ const PORT = process.env.PORT || 8085;
 app.use(cors());
 app.use(express.json());
 
-app.post('/api/fetch', Linkedin, Indeed,  Glassdoor);
+app.post('/api/fetch',withHeartbeat, Linkedin, Indeed,  Glassdoor, (req, res) => {
+                                                                                if (res.headersSent) return;
+                                                                                res.status(200).json({
+                                                                                  message: 'scrape document..',
+                                                                                  Linkedin: req.body.linkedInItems || [],
+                                                                                  indeedItems: req.body.indeedItems || [],
+                                                                                  glassdoorItems: req.body.glassdoorItems || [],
+                                                                                });
+                                                                              });
 
 const server = createServer(app);
 server.requestTimeout = 0;
